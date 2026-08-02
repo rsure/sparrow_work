@@ -1,0 +1,32 @@
+node_modules/
+dist/
+out/
+release/
+# 前端测试覆盖率报告（pnpm run test:frontend:coverage 生成，随时可重跑，不入库）
+coverage/
+__pycache__/
+*.py[cod]
+.venv/
+build/
+*.egg-info/
+.DS_Store
+*.log
+.env
+.env.local
+# 本地缓存（仅在受限环境下重定向包管理器缓存时产生）
+.uv-cache/
+.uv-python/
+.npm-cache/
+# 由 npm run build:backend 同步进来的后端可执行文件（构建产物，不入库）
+electron/resources/backend/*
+!electron/resources/backend/.gitkeep
+
+# Java 后端构建产物与本地数据库（target/ 由 Maven 生成，*.db 随时可重建）
+backend_java/target/
+backend_java/*.db
+backend_java/*.db-shm
+backend_java/*.db-wal
+
+# RAG 的 FAISS 索引（可从 SQLite 重建）
+faiss_index/
+/backend_java/target/

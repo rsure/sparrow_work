@@ -1,0 +1,45 @@
+{
+  "name": "vue3-electron-fastapi",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Electron + Vue3(TS) + Python(FastAPI/uv) 多端项目外壳（JS/TS 侧统一用 pnpm）",
+  "packageManager": "pnpm@12.6.0",
+  "engines": {
+    "node": ">=18",
+    "pnpm": ">=10"
+  },
+  "scripts": {
+    "setup": "uv sync --directory backend && pnpm install && node scripts/install-hooks.mjs",
+    "setup:hooks": "node scripts/install-hooks.mjs",
+    "dev": "node scripts/dev.mjs",
+    "dev:web": "pnpm --filter app-frontend run dev",
+    "dev:desktop": "pnpm --filter app-electron run dev",
+    "dev:backend": "node scripts/dev.mjs --backend-only",
+    "dev:backend:java": "node scripts/dev.mjs --backend-only --backend=java",
+    "dev:backend:python": "node scripts/dev.mjs --backend-only --backend=python",
+    "setup:java": "node scripts/run-maven.mjs -DskipTests dependency:go-offline",
+    "test:backend": "uv run --directory backend pytest",
+    "test:backend:java": "node scripts/run-maven.mjs test",
+    "test:frontend": "pnpm --filter app-frontend run test",
+    "test:frontend:coverage": "pnpm --filter app-frontend run test:coverage",
+    "test": "pnpm run test:backend && pnpm run test:frontend",
+    "test:all": "pnpm run test && pnpm run test:backend:java",
+    "check:migrations": "uv run --directory backend python scripts/check_migrations.py",
+    "typecheck": "pnpm --filter app-frontend run typecheck && pnpm --filter app-electron run typecheck",
+    "build:web": "pnpm --filter app-frontend run build",
+    "build:backend:only": "uv run --directory backend pyinstaller --noconfirm --clean app-backend.spec",
+    "build:backend": "pnpm run build:backend:only && node scripts/sync-backend.mjs",
+    "build:backend:java:only": "node scripts/run-maven.mjs -DskipTests package",
+    "build:backend:java": "pnpm run build:backend:java:only && node scripts/sync-java-backend.mjs",
+    "sync:backend": "node scripts/sync-backend.mjs",
+    "sync:backend:java": "node scripts/sync-java-backend.mjs",
+    "build:desktop": "pnpm --filter app-electron run build",
+    "dist": "pnpm --filter app-electron run dist",
+    "dist:win": "pnpm --filter app-electron run dist:win",
+    "dist:mac": "pnpm --filter app-electron run dist:mac",
+    "dist:linux": "pnpm --filter app-electron run dist:linux"
+  },
+  "devDependencies": {
+    "wait-on": "^8.0.2"
+  }
+}

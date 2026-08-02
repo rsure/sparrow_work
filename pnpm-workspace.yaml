@@ -1,0 +1,26 @@
+# pnpm 工作区定义。
+#
+# 本仓库 JS/TS 侧统一使用 pnpm（不再使用 npm/yarn），所以这里就是唯一的工作区来源：
+# pnpm 不读 package.json 里的 "workspaces" 字段，只认这个文件。
+# 有了它以后三个包（根 / app-frontend / app-electron）共用一份 node_modules 与一份 pnpm-lock.yaml。
+packages:
+  - frontend
+  - electron
+
+# pnpm 10.26+ 默认不执行依赖的构建脚本（与 npm 11 的 install-scripts 允许列表同类策略），
+# 未放行会直接报 ERR_PNPM_IGNORED_BUILDS；strictDepBuilds 默认 true，也就是「审核制」。
+# 键名是 allowBuilds —— 旧的 onlyBuiltDependencies 在 pnpm 11 已被移除。
+# 需要放行的三个包：
+#   esbuild          vite 构建所需的平台二进制
+#   electron         node install.js，下载 Electron 运行时（国内需配 ELECTRON_MIRROR）
+#   app-builder-bin  electron-builder 的打包器，解压 win/x64/app-builder.exe
+allowBuilds:
+  app-builder-bin: true
+  electron: true
+  esbuild: true
+
+# pnpm 默认开启 sideEffectsCache：把「跑过构建脚本的包」缓存进全局 store，之后安装直接复用。
+# 但我们的 store 缓存到的是「未执行 postinstall」的副本，复用会导致
+# electron/dist、app-builder-bin/win 等目录缺失，报 spawn ENOENT。
+# 关掉它，保证每次安装都真正执行上面三个包的构建脚本（安装稍慢一点，但结果确定）。
+sideEffectsCache: false

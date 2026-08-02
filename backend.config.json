@@ -1,0 +1,17 @@
+{
+  "target": "java",
+  "port": 8000,
+  "java": {
+    "devDir": "backend_java",
+    "devCommand": "{mvnw} -f backend_java/pom.xml spring-boot:run -Dspring-boot.run.arguments=--server.port={port}",
+    "jar": "backend-java.jar",
+    "bundledJre": "jre",
+    "startupTimeoutMs": 180000
+  },
+  "python": {
+    "devDir": "backend",
+    "devCommand": "uv run python run.py --port {port}",
+    "exe": "app-backend.exe",
+    "startupTimeoutMs": 30000
+  }
+}

@@ -1,0 +1,22 @@
+#!/bin/sh
+# .githooks/pre-commit —— 提交前校验（由 `pnpm run setup:hooks` 设为 git 的 hooksPath）
+#
+# 只做一件事：跑迁移漂移检查（`pnpm run check:migrations`）。
+# 为什么放在提交前而不是 CI：漂移是"改了实体忘写迁移"，改的人手上最清楚怎么补，
+# 等到 CI 才发现要多一轮来回；而且这项检查是纯本地的（临时库 + 无网络），耗时 2~3 秒。
+#
+# 临时跳过（不推荐，仅限紧争情况）：
+#   git commit --no-verify
+#
+# 注意：Windows 下 git 自带 sh（Git Bash），本脚本不需要额外安装 bash。
+
+set -e
+
+echo "[pre-commit] 迁移漂移检查…"
+if ! pnpm -s run check:migrations; then
+  echo ""
+  echo "[pre-commit] 校验未通过，提交已中止。"
+  echo "  修复：cd backend && uv run alembic revision --autogenerate -m \"描述\""
+  echo "  然后人工审阅生成的迁移（确认没有 DROP checkpoints/writes）再 git add。"
+  exit 1
+fi
