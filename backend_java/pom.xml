@@ -1,0 +1,214 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  模块说明：backend_java 的 Maven 依赖与构建清单。
+
+  技术栈（与 doc/java_langchan_doc/01-总体架构与集成方案.md 保持一致）：
+    - JDK 17：与 LangGraph4j 的编译目标一致，也是 Spring Boot 3.5.x 的推荐版本；
+    - Spring Boot 3.5.16：Web / 配置 / JDBC / 测试；
+    - LangChain4j 1.22.0：模型调用、工具、RAG、MCP；
+    - LangGraph4j 1.9.6：状态图、检查点、中断/恢复（对应 Python 的 LangGraph）；
+    - SQLite：业务表与 LangGraph 检查点共用同一个本地数据库文件。
+
+  构建命令：
+    mvn -f backend_java/pom.xml clean package
+  启动命令：
+    mvn -f backend_java/pom.xml spring-boot:run
+-->
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+
+    <!-- Maven 模型版本，固定写 4.0.0 即可 -->
+    <modelVersion>4.0.0</modelVersion>
+
+    <!-- Spring Boot 父 POM：统一管理 Spring 依赖版本、插件版本与默认编译参数 -->
+    <parent>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-starter-parent</artifactId>
+        <!-- 3.5.x 是 JDK 17 可用的稳定线；不要升到 4.x，否则会要求 JDK 21 + Spring Framework 7 -->
+        <version>3.5.16</version>
+        <relativePath/>
+    </parent>
+
+    <!-- 本模块坐标：artifactId 与 spring-boot-maven-plugin 生成的 jar 名相关 -->
+    <groupId>com.example</groupId>
+    <artifactId>backend-java</artifactId>
+    <version>0.1.0</version>
+    <name>backend-java</name>
+    <description>Vue3 + Electron 桌面应用的 Java(Spring Boot + LangChain4j + LangGraph4j) 后端</description>
+
+    <properties>
+        <!-- 源码与字节码目标版本：必须与 LangGraph4j 的 17 对齐 -->
+        <java.version>17</java.version>
+        <!-- LangChain4j 核心与各供应商模块的统一版本 -->
+        <langchain4j.version>1.22.0</langchain4j.version>
+        <!-- MCP 模块仍采用 beta 版本号，需要单独声明 -->
+        <langchain4j.mcp.version>1.22.0-beta32</langchain4j.mcp.version>
+        <!-- LangGraph4j 核心、LangChain4j 适配器、SQLite 检查点保存器的统一版本 -->
+        <langgraph4j.version>1.9.6</langgraph4j.version>
+        <!-- SQLite JDBC 驱动版本：业务表与检查点共用 -->
+        <sqlite.version>3.53.4.0</sqlite.version>
+        <hutool.version>5.8.46</hutool.version>
+        <lombok.version>1.18.48</lombok.version>
+        <!-- 项目编码：源码、配置文件、控制台输出统一 UTF-8，避免中文注释乱码 -->
+        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+    </properties>
+
+    <!--
+      依赖版本管理：
+        1. LangChain4j BOM 统一管理核心、OpenAI/Anthropic/Gemini/Ollama 等模块版本；
+        2. LangGraph4j BOM 统一管理 core / langchain4j / sqlite-saver 等模块版本；
+        3. 下面 <dependencies> 中就不必再逐条写 version，减少版本漂移。
+    -->
+    <dependencyManagement>
+        <dependencies>
+            <!-- LangChain4j 全家桶版本表 -->
+            <dependency>
+                <groupId>dev.langchain4j</groupId>
+                <artifactId>langchain4j-bom</artifactId>
+                <version>${langchain4j.version}</version>
+                <type>pom</type>
+                <scope>import</scope>
+            </dependency>
+            <!-- LangGraph4j 全家桶版本表 -->
+            <dependency>
+                <groupId>org.bsc.langgraph4j</groupId>
+                <artifactId>langgraph4j-bom</artifactId>
+                <version>${langgraph4j.version}</version>
+                <type>pom</type>
+                <scope>import</scope>
+            </dependency>
+        </dependencies>
+    </dependencyManagement>
+
+    <dependencies>
+
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-actuator</artifactId>
+        </dependency>
+
+        <!-- ==================== Web / 配置 / 校验 ==================== -->
+        <!-- Spring MVC + 内嵌 Tomcat：提供 REST 接口、SSE（SseEmitter）与静态资源能力 -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-web</artifactId>
+        </dependency>
+        <!-- Jakarta Bean Validation：给请求 DTO 加 @NotBlank / @Min 等约束，参数不合法时统一转成 400 -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-validation</artifactId>
+        </dependency>
+        <!-- JDBC + HikariCP：业务表用 JdbcTemplate 直接读写 SQLite，暂不引入 JPA -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-jdbc</artifactId>
+        </dependency>
+
+        <!-- ==================== 数据库 ==================== -->
+        <!-- SQLite JDBC 驱动：本地单文件数据库，对应 Python 侧的 app.db -->
+        <dependency>
+            <groupId>org.xerial</groupId>
+            <artifactId>sqlite-jdbc</artifactId>
+            <version>${sqlite.version}</version>
+        </dependency>
+
+        <!-- ==================== LangChain4j：模型 / 工具 / RAG / MCP ==================== -->
+        <!-- LangChain4j 核心：ChatModel、StreamingChatModel、EmbeddingModel、Tool 注解、InMemoryEmbeddingStore 等 -->
+        <dependency>
+            <groupId>dev.langchain4j</groupId>
+            <artifactId>langchain4j</artifactId>
+        </dependency>
+        <!-- OpenAI 兼容协议：同时用于 OpenAI、DeepSeek、以及用户自定义的中转站（base-url 可改） -->
+        <dependency>
+            <groupId>dev.langchain4j</groupId>
+            <artifactId>langchain4j-open-ai</artifactId>
+        </dependency>
+        <!-- Anthropic Claude：模型工厂的待实现分支（当前工程只留接口，不强制调用） -->
+        <dependency>
+            <groupId>dev.langchain4j</groupId>
+            <artifactId>langchain4j-anthropic</artifactId>
+        </dependency>
+        <!-- Google Gemini：模型工厂的待实现分支（当前工程只留接口，不强制调用） -->
+        <dependency>
+            <groupId>dev.langchain4j</groupId>
+            <artifactId>langchain4j-google-ai-gemini</artifactId>
+        </dependency>
+        <!-- Ollama：本地模型接入（免 API Key），模型工厂的待实现分支 -->
+        <dependency>
+            <groupId>dev.langchain4j</groupId>
+            <artifactId>langchain4j-ollama</artifactId>
+        </dependency>
+        <!-- MCP 客户端：把外部 MCP Server 的工具转成 LangChain4j Tool，对应 Python 的 langchain-mcp-adapters -->
+        <dependency>
+            <groupId>dev.langchain4j</groupId>
+            <artifactId>langchain4j-mcp</artifactId>
+            <!-- MCP 模块是 beta 版本，必须显式指定，避免被 BOM 的稳定版本覆盖 -->
+            <version>${langchain4j.mcp.version}</version>
+        </dependency>
+
+        <!-- ==================== LangGraph4j：图运行时 / 检查点 ==================== -->
+        <!-- 图运行时：StateGraph、CompiledGraph、RunnableConfig、中断与恢复 -->
+        <dependency>
+            <groupId>org.bsc.langgraph4j</groupId>
+            <artifactId>langgraph4j-core</artifactId>
+        </dependency>
+        <!-- LangChain4j 适配：ChatMessage 的 Jackson 序列化器、工具服务、流式生成器 -->
+        <dependency>
+            <groupId>org.bsc.langgraph4j</groupId>
+            <artifactId>langgraph4j-langchain4j</artifactId>
+        </dependency>
+        <!-- SQLite 检查点保存器：按 threadId 持久化图状态，对应 Python 的 AsyncSqliteSaver -->
+        <dependency>
+            <groupId>org.bsc.langgraph4j</groupId>
+            <artifactId>langgraph4j-sqlite-saver</artifactId>
+        </dependency>
+        <!-- jpa -->
+        <!-- Spring Data JPA -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-data-jpa</artifactId>
+        </dependency>
+
+        <!-- Hibernate 6 社区方言包 (包含 SQLiteDialect) -->
+        <dependency>
+            <groupId>org.hibernate.orm</groupId>
+            <artifactId>hibernate-community-dialects</artifactId>
+        </dependency>
+        <!-- tools -->
+        <dependency>
+            <groupId>cn.hutool</groupId>
+            <artifactId>hutool-core</artifactId>
+            <version>${hutool.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>org.projectlombok</groupId>
+            <artifactId>lombok</artifactId>
+            <version>${lombok.version}</version>
+            <scope>provided</scope>
+        </dependency>
+        <!-- ==================== 测试 ==================== -->
+        <!-- Spring Boot 测试套件：JUnit 5、MockMvc、AssertJ；scope=test 表示不会打进运行时 jar -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <!-- 产物固定叫 backend-java.jar：Electron 打包脚本按这个文件名复制到 resources/backend/ -->
+        <finalName>backend-java</finalName>
+        <plugins>
+            <!-- Spring Boot 打包插件：把依赖一起打进可执行 jar，并生成 BOOT-INF 目录结构 -->
+            <plugin>
+                <groupId>org.springframework.boot</groupId>
+                <artifactId>spring-boot-maven-plugin</artifactId>
+                <configuration>
+                    <!-- 明确启动类，避免多模块或包扫描顺序变化时找不到入口 -->
+                    <mainClass>com.example.backendjava.BackendJavaApplication</mainClass>
+                </configuration>
+            </plugin>
+        </plugins>
+    </build>
+</project>

@@ -1,0 +1,77 @@
+# 模块说明：Java 后端的运行配置。
+# 环境变量优先级高于本文件；命令行 --server.port=9000 又可以覆盖环境变量。
+# 变量名与 Python 后端保持兼容：APP_PORT / APP_HOST / APP_ENV / APP_APP_NAME / APP_VERSION。
+
+server:
+  # 监听地址：只绑定本机回环地址，不暴露到局域网
+  address: ${APP_HOST:127.0.0.1}
+  # 监听端口：必须与 Electron 的 APP_PORT、前端 VITE_BACKEND_PROXY 保持一致
+  port: ${APP_PORT:8000}
+  servlet:
+    # 统一接口前缀：所有 Controller 的 /xxx 最终都变成 /api/xxx
+    context-path: /api
+  # 让 Tomcat 不主动超时长时间 SSE（0 表示不限制；具体流的结束由业务控制）
+  tomcat:
+    connection-timeout: 120s
+
+spring:
+  application:
+    # 应用名：出现在日志与部分诊断信息里
+    name: backend-java
+
+  datasource:
+    # SQLite 数据库文件；默认放在启动时的工作目录下
+    url: jdbc:sqlite:${APP_DB_PATH:app.db}
+    # SQLite JDBC 驱动类
+    driver-class-name: org.sqlite.JDBC
+    hikari:
+      # SQLite 是单文件数据库，写锁粒度粗；连接池保持 1 条可以避免 "database is locked"
+      maximum-pool-size: 1
+      # 连接空闲时也保持存活，减少反复打开文件的成本
+      minimum-idle: 1
+      # 取连接前的探活语句
+      connection-test-query: SELECT 1
+
+  sql:
+    init:
+      # 每次启动都执行 schema.sql；脚本内部使用 CREATE TABLE IF NOT EXISTS，重复执行安全
+      mode: always
+      schema-locations: classpath:schema.sql
+
+  jackson:
+    # 反序列化时忽略未知字段：前端多传字段不应该导致 400
+    deserialization:
+      fail-on-unknown-properties: false
+    serialization:
+      # 时间字段输出 ISO-8601 字符串，而不是时间戳数字
+      write-dates-as-timestamps: false
+
+  mvc:
+    async:
+      # SSE 请求不设置全局超时；具体流的超时由业务代码自行控制
+      request-timeout: -1
+  jpa:
+    # SQLite 方言由 hibernate-community-dialects 提供，类名必须写全限定名（曾误写成 sorg.* 导致启动失败）
+    database-platform: org.hibernate.community.dialect.SQLiteDialect
+    hibernate:
+      ddl-auto: update
+    show-sql: false
+app:
+  # 服务名：/api/health 会返回；用 APP_APP_NAME 覆盖是为了兼容 Python 侧的变量名
+  name: ${APP_APP_NAME:vue3-electron-fastapi-java}
+  # 版本号：仅用于展示
+  version: ${APP_VERSION:0.1.0}
+  # 运行环境：development / production
+  env: ${APP_ENV:development}
+  # 跨域来源：* 表示放开所有来源；生产化时改成明确白名单
+  cors-origins: ${APP_CORS_ORIGINS:*}
+  # LangGraph4j 检查点数据库：默认与业务库共用 app.db
+  checkpoint-db-path: ${APP_CHECKPOINT_DB_PATH:app.db}
+
+logging:
+  level:
+    root: INFO
+    # 本项目包名下的日志打到 DEBUG，方便学习者观察请求与服务调用
+    com.example.backendjava: DEBUG
+  pattern:
+    console: "%d{HH:mm:ss.SSS} %-5level [%thread] %logger{36} - %msg%n"

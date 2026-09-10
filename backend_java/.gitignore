@@ -1,0 +1,15 @@
+# Maven 构建产物（jar、class、测试报告）
+target/
+
+# IntelliJ IDEA 工程文件
+.idea/
+*.iml
+
+# 本地 SQLite 数据库（业务表 + LangGraph 检查点），随时可由 schema.sql 重建
+*.db
+*.db-shm
+*.db-wal
+
+# 本地日志
+logs/
+*.log
