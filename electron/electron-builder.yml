@@ -1,0 +1,122 @@
+# electron-builder 打包配置：把 Electron 壳 + 前端产物 + Python 后端打成安装包。
+# 用法（在 electron/ 目录下）：pnpm run build
+
+# 应用唯一标识（反域名格式），系统用它区分不同应用，升级安装时不能改
+appId: com.example.vue3electronfastapi
+# 应用显示名：出现在安装目录、快捷方式、窗口标题上
+productName: Vue3ElectronFastAPI
+# 版权信息：写入 exe 文件属性
+copyright: Copyright (c) 2025
+
+# 目录约定
+directories:
+  # 打包产物输出目录：electron/dist/
+  output: dist
+  # 构建资源目录（图标 icon.ico / icon.icns 等放这里）
+  buildResources: build
+
+# Only Electron code + runtime deps go into the asar.
+# The renderer output and the Python backend are shipped via extraResources.
+# 打进 asar 归档的内容：编译后的主进程/preload 代码 + package.json
+files:
+  - out/**/*
+  - package.json
+  # 排除 sourcemap，减小体积
+  - '!**/*.map'
+
+# frontend/dist -> resources/renderer ; electron/resources/backend -> resources/backend
+# NOTE:
+#   - Java 后端先执行 pnpm run build:backend:java，把 backend-java.jar 同步到 resources/backend/
+#   - Python 后端先执行 pnpm run build:backend，把 app-backend(.exe) 同步到 resources/backend/
+#   - 两套产物可以同时存在；运行时由 backend.config.json 的 target 决定用哪一个
+# extraResources：asar 之外的原样拷贝，运行时通过 process.resourcesPath 访问
+extraResources:
+  # 前端构建产物 → 安装包内 resources/renderer（主进程用 file:// 加载 index.html）
+  - from: ../frontend/dist
+    to: renderer
+  # 后端可执行文件目录 → 安装包内 resources/backend（主进程负责把它启动起来）
+  # 如果放了 jre/ 子目录（精简 JRE），也会一起进安装包，供 java -jar 使用
+  - from: resources/backend
+    to: backend
+  # 后端目标配置：打包后主进程从 resources/backend.config.json 读取 target
+  - from: ../backend.config.json
+    to: backend.config.json
+
+# true = 打成 asar 归档（提升加载速度、避免源码被直接翻看）
+asar: true
+
+# 自动更新（OPS-4）的发布源。
+# 打包时 electron-builder 会据此生成 resources/app-update.yml，
+# 运行时的 electron-updater 只读这个文件来决定"去哪里问有没有新版本"。
+# 换成 GitHub Releases 时把 provider 改成 github 并填 owner/repo，业务代码一行都不用改。
+# 注意：用 generic 时必须把 dist 目录里的安装包 + latest.yml 一起传到 url 指向的目录。
+publish:
+  - provider: generic
+    # 占位地址：正式发布前改成自己的静态文件服务（末尾不要带斜杠）
+    url: https://updates.example.com/vue3-electron-fastapi
+
+# The main-process bundle only uses node: builtins, so the production-dependency
+# install step is unnecessary (and it runs an extra package-manager install that can fail).
+# false = 不重新编译原生模块（本项目没有原生依赖）
+npmRebuild: false
+# false = 不从源码编译依赖（同上，省时间且避免安装步骤失败）
+buildDependenciesFromSource: false
+
+# Windows 平台配置
+win:
+  target:
+    # nsis = 生成带向导的 .exe 安装程序
+    - target: nsis
+      # 目标架构：64 位
+      arch:
+        - x64
+  # 产物文件名模板：app-1.0.0-win-x64.exe
+  artifactName: app-${version}-win-${arch}.${ext}
+
+# NSIS 安装程序的具体行为
+nsis:
+  # false = 显示安装向导（true 表示一键静默安装）
+  oneClick: false
+  # false = 只为当前用户安装，不需要管理员权限
+  perMachine: false
+  # true = 允许用户自选安装目录
+  allowToChangeInstallationDirectory: true
+  # true = 在桌面创建快捷方式
+  createDesktopShortcut: true
+  # true = 在开始菜单创建快捷方式
+  createStartMenuShortcut: true
+  # 快捷方式显示名
+  shortcutName: Vue3ElectronFastAPI
+  # Literal braces must use {{ }} here: ${ } is interpreted as electron-builder interpolation
+  # 控制面板「卸载程序」里显示的名称，{{version}} 会被替换成真实版本号
+  uninstallDisplayName: Vue3ElectronFastAPI {{version}}
+
+# macOS 平台配置
+mac:
+  target:
+    # dmg = 生成磁盘映像安装包
+    - target: dmg
+      # 同时产出 Apple 芯片(arm64) 与 Intel(x64) 两个版本
+      arch:
+        - arm64
+        - x64
+  # 应用分类（影响 App Store 归类与 Finder 展示）
+  category: public.app-category.developer-tools
+  # null = 不做代码签名（本地学习用；正式发布须改为开发者证书）
+  identity: null
+  artifactName: app-${version}-mac-${arch}.${ext}
+
+# Linux 平台配置
+linux:
+  target:
+    # AppImage = 免安装单文件；deb = Debian/Ubuntu 安装包
+    - target: AppImage
+      arch:
+        - x64
+    - target: deb
+      arch:
+        - x64
+  category: Development
+  # 维护者信息（deb 包必填），发布前请改成自己的邮箱
+  maintainer: your-name <your-name@example.com>
+  artifactName: app-${version}-linux-${arch}.${ext}

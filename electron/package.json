@@ -1,0 +1,33 @@
+{
+  "name": "app-electron",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Electron 桌面外壳（含打包配置）",
+  "author": "your-name",
+  "license": "MIT",
+  "main": "out/main/index.js",
+  "scripts": {
+    "dev": "electron-vite dev",
+    "build": "electron-vite build",
+    "preview": "electron-vite preview",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "backend:build": "uv run --directory ../backend pyinstaller --noconfirm --clean app-backend.spec",
+    "dist": "pnpm run build && electron-builder",
+    "dist:win": "pnpm run build && electron-builder --win",
+    "dist:mac": "pnpm run build && electron-builder --mac",
+    "dist:linux": "pnpm run build && electron-builder --linux",
+    "dist:all": "pnpm run build && electron-builder -mwl"
+  },
+  "dependencies": {
+    "electron-updater": "^6.8.9"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.5",
+    "@vitejs/plugin-vue": "^5.2.1",
+    "electron": "33.4.11",
+    "electron-builder": "^25.1.8",
+    "electron-vite": "^2.3.0",
+    "typescript": "~5.7.2",
+    "vite": "^5.4.11"
+  }
+}

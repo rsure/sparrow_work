@@ -1,0 +1,31 @@
+// Electron 主进程 / preload 的 TypeScript 编译选项。
+// 与前端 tsconfig 的区别：没有 DOM 类型（主进程不是浏览器环境），也没有路径别名。
+// 本文件支持 // 注释（JSONC）。
+{
+  "compilerOptions": {
+    // 编译目标语法：最新标准，实际转译降级由 electron-vite(esbuild) 处理
+    "target": "ESNext",
+    // 模块格式：ESNext（源码写法），打包后由 electron-vite 输出成 CJS/ESM
+    "module": "ESNext",
+    // 模块解析策略：bundler，与 frontend/tsconfig.json 保持一致
+    "moduleResolution": "bundler",
+    // 内置类型库：只要 ES 标准库，**不要 DOM**（主进程里没有 window/document）
+    "lib": ["ESNext"],
+    // 全局类型：node，提供 process、__dirname、path 等主进程必备能力
+    "types": ["node"],
+    // 开启全部严格检查，与前端一致
+    "strict": true,
+    // 只类型检查，不产出文件（产物由 electron-vite 生成到 out/）
+    "noEmit": true,
+    // 跳过 node_modules 中 .d.ts 的检查，加快 typecheck
+    "skipLibCheck": true,
+    // 允许 CommonJS 风格的默认导入（如 `import path from 'node:path'` 之外的老包）
+    "esModuleInterop": true,
+    // 每个文件可独立转译，符合打包器逐文件编译的工作方式
+    "isolatedModules": true,
+    // 允许导入 .json 并推断类型
+    "resolveJsonModule": true
+  },
+  // 检查范围：主进程/preload/shared 源码 + electron-vite 配置文件
+  "include": ["src/**/*.ts", "electron.vite.config.ts"]
+}
