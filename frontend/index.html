@@ -1,0 +1,18 @@
+<!doctype html>
+<!-- 前端 HTML 入口：Vite 开发时由 dev server 提供，打包后由 Electron 以 file:// 加载 -->
+<html lang="zh-CN">
+  <head>
+    <!-- 字符编码：必须声明，否则中文会乱码 -->
+    <meta charset="UTF-8" />
+    <!-- 视口设置：宽度跟随设备，初始缩放 1 倍（移动端/高 DPI 屏适配） -->
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!-- 浏览器标签页标题，也是 Electron 窗口标题 -->
+    <title>Vue3 + Electron + FastAPI 外壳</title>
+  </head>
+  <body>
+    <!-- Vue 应用的挂载点：main.ts 里 createApp(...).mount('#app') 会把页面渲染到这里 -->
+    <div id="app"></div>
+    <!-- 前端入口脚本：type="module" 表示按 ES 模块加载，路径以 / 开头是相对项目根目录 -->
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

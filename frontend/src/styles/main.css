@@ -1,0 +1,225 @@
+/**
+ * 全局样式与设计变量（M2 / UX-2：主题化）。
+ *
+ * 两层结构：
+ *   1. **变量层**：这里给出每个 token 的默认值（深色），保证 JS 还没跑时页面就已经是正确配色；
+ *      运行时由 `stores/theme.ts` 的 apply() 覆盖成用户选的主题（写到 documentElement.style）。
+ *   2. **基础类**：.card / .btn / .badge / .muted 等通用类，老组件继续可用。
+ *
+ * 改主题只需要改 tokens.ts / presets.ts，不要在这里写死颜色。
+ */
+
+/* ========================================================================== */
+/* 1. 设计变量（默认值 = 深色 slate 预设，与 themes/tokens.ts 的 BASE_DARK 对齐） */
+/* ========================================================================== */
+:root {
+  /* 页面底色 */
+  --color-bg: #0b1120;
+  /* 页面顶部柔光（body 渐变圆心） */
+  --color-bg-glow: #1e293b;
+  /* 卡片/面板背景 */
+  --color-surface: #111827;
+  /* 二级背景 */
+  --color-surface-2: #1f2937;
+  /* 描边 */
+  --color-border: #273449;
+  /* 正文与次要文字 */
+  --color-text: #e5e7eb;
+  --color-text-muted: #94a3b8;
+  /* 主题色与它上面的文字色 */
+  --color-primary: #38bdf8;
+  --color-on-primary: #04121f;
+  --color-primary-weak: rgba(56, 189, 248, 0.12);
+  /* 语义色 */
+  --color-success: #34d399;
+  --color-danger: #f87171;
+  --color-warning: #fbbf24;
+  /* 代码块 */
+  --code-bg: #0d1526;
+  --code-border: #22304a;
+  /* 圆角与字号（由主题设置覆盖） */
+  --radius: 14px;
+  --font-size: 14px;
+  /* 等宽字体栈：代码、路径、模型名用它 */
+  --font-mono: 'Cascadia Code', 'JetBrains Mono', Consolas, 'Courier New', monospace;
+  /* 代码高亮配色（深色）：按需覆盖到 .hljs-* 类上 */
+  --hljs-keyword: #c792ea;
+  --hljs-string: #a5d6a7;
+  --hljs-number: #f0a35e;
+  --hljs-title: #82aaff;
+  /* 告诉浏览器当前是深色：滚动条、原生控件跟随 */
+  color-scheme: dark;
+}
+
+/* 浅色模式下的高亮配色：data-theme 由 theme store 写在 <html> 上 */
+:root[data-theme='light'] {
+  --hljs-keyword: #a626a4;
+  --hljs-string: #2e7d32;
+  --hljs-number: #b26a00;
+  --hljs-title: #1565c0;
+}
+
+/* ========================================================================== */
+/* 2. Vant 组件变量映射                                                        */
+/* ========================================================================== */
+/* 为什么要把 Vant 变量指到我们的 token 上：
+   Vant 自带一整套浅色变量，深色主题下弹窗、按钮、输入框会白得刺眼；
+   映射一次之后，任何主题切换都能同时覆盖弹层（弹层挂在 body 末尾，不受组件作用域影响）。 */
+:root {
+  --van-primary-color: var(--color-primary);
+  --van-success-color: var(--color-success);
+  --van-danger-color: var(--color-danger);
+  --van-warning-color: var(--color-warning);
+  --van-text-color: var(--color-text);
+  --van-text-color-2: var(--color-text-muted);
+  --van-text-color-3: var(--color-text-muted);
+  --van-border-color: var(--color-border);
+  --van-background: var(--color-bg);
+  --van-background-2: var(--color-surface);
+  --van-background-3: var(--color-surface);
+  --van-active-color: var(--color-surface-2);
+  --van-popup-background: var(--color-surface);
+  --van-dialog-background: var(--color-surface);
+  --van-cell-background: var(--color-surface);
+  --van-field-input-text-color: var(--color-text);
+  --van-field-placeholder-text-color: var(--color-text-muted);
+}
+
+/* ========================================================================== */
+/* 3. 基础重置与排版                                                           */
+/* ========================================================================== */
+/* 让 padding / border 计入宽度，避免「设置宽度后再加 padding 就撑破布局」 */
+* {
+  box-sizing: border-box;
+}
+
+/* 三层撑满视口，布局才能用 height:100% 做分栏 */
+html,
+body,
+#app {
+  height: 100%;
+}
+
+/* 始终为纵向滚动条预留槽位，避免切换页面时横向抖动 */
+html {
+  scrollbar-gutter: stable;
+}
+
+/* 页面主体：主题底色 + 顶部柔光 + 中文字体栈 */
+body {
+  margin: 0;
+  background:
+    radial-gradient(circle at 20% -10%, var(--color-bg-glow) 0%, var(--color-bg) 55%);
+  color: var(--color-text);
+  font-family: 'Segoe UI', 'Microsoft YaHei', system-ui, -apple-system, sans-serif;
+  font-size: var(--font-size);
+  line-height: 1.6;
+  -webkit-font-smoothing: antialiased;
+  /* 主题切换时给一点点过渡，避免颜色"啪"地跳变 */
+  transition: background-color 0.2s ease, color 0.2s ease;
+}
+
+h1,
+h2,
+h3 {
+  margin: 0 0 12px;
+  line-height: 1.3;
+}
+
+code {
+  font-family: var(--font-mono);
+}
+
+/* 滚动条：跟随主题，不用系统默认的亮条 */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-border) transparent;
+}
+
+*::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+*::-webkit-scrollbar-thumb {
+  background: var(--color-border);
+  border-radius: 4px;
+}
+
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+/* ========================================================================== */
+/* 4. 通用类（老页面继续使用；新页面优先用各自的 scoped 样式）                    */
+/* ========================================================================== */
+/* 通用卡片容器 */
+.card {
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  padding: 24px;
+  box-shadow: 0 10px 30px rgba(2, 6, 23, 0.18);
+}
+
+/* 主按钮：主题色实心 */
+.btn {
+  appearance: none;
+  border: 1px solid transparent;
+  border-radius: 10px;
+  padding: 10px 18px;
+  font-size: var(--font-size);
+  font-weight: 600;
+  color: var(--color-on-primary);
+  background: var(--color-primary);
+  cursor: pointer;
+  transition: transform 0.12s ease, box-shadow 0.12s ease, opacity 0.12s ease;
+}
+
+.btn:hover:not(:disabled) {
+  transform: translateY(-1px);
+  box-shadow: 0 6px 18px var(--color-primary-weak);
+}
+
+.btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+/* 次要按钮：透明底 + 描边 */
+.btn--ghost {
+  background: transparent;
+  color: var(--color-text);
+  border-color: var(--color-border);
+}
+
+/* 状态徽标 */
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border-radius: 999px;
+  padding: 2px 10px;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.badge--ok {
+  color: var(--color-success);
+  background: var(--color-surface-2);
+}
+
+.badge--error {
+  color: var(--color-danger);
+  background: var(--color-surface-2);
+}
+
+.badge--idle {
+  color: var(--color-text-muted);
+  background: var(--color-surface-2);
+}
+
+/* 次要文字 */
+.muted {
+  color: var(--color-text-muted);
+}

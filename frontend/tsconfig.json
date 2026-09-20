@@ -1,0 +1,53 @@
+// 前端（Vue3 + TS）的 TypeScript 编译选项。
+// tsconfig 属于 JSONC：允许写 // 注释，但不允许出现多余的逗号。
+{
+  "compilerOptions": {
+    // 编译目标语法版本：ESNext 表示「最新标准」，Vite 只做转译不做降级，交给浏览器
+    "target": "ESNext",
+    // 类字段按 ES 标准语义定义（true），而不是 TS 早期的赋值语义
+    "useDefineForClassFields": true,
+    // 模块格式：ESNext，配合下面的 bundler 解析策略
+    "module": "ESNext",
+    // 模块解析策略：bundler，允许像 Vite 那样省略扩展名、读 exports 字段
+    "moduleResolution": "bundler",
+    // 可用的内置类型库：ESNext 标准库 + 浏览器 DOM（含 DOM.Iterable 让 NodeList 可迭代）
+    "lib": ["ESNext", "DOM", "DOM.Iterable"],
+    // 保留 JSX 不转换（Vue 用不到 React JSX，这里保持默认）
+    "jsx": "preserve",
+    // 开启全部严格检查（含 strictNullChecks）：新手项目必须开，能提前暴露空值 bug
+    "strict": true,
+    // 声明了但没用的局部变量 → 报错，避免留下死代码
+    "noUnusedLocals": true,
+    // 函数参数声明了但没用 → 报错（可用下划线前缀 _ 豁免）
+    "noUnusedParameters": true,
+    // 只做类型检查，不产出 JS 文件（真正的打包由 Vite 负责）
+    "noEmit": true,
+    // 每个文件必须能独立转译（Vite 逐文件编译的前提）
+    "isolatedModules": true,
+    // 让 `import Vue from 'vue'` 这类 CommonJS 默认导入写法可用
+    "esModuleInterop": true,
+    // 跳过 node_modules 里 .d.ts 的类型检查，显著加快 typecheck
+    "skipLibCheck": true,
+    // 允许 `import data from './x.json'` 并推断出类型
+    "resolveJsonModule": true,
+    // 额外注入的全局类型：vite/client 提供 import.meta.env，node 提供 process 等
+    "types": ["vite/client", "node"],
+    // 路径别名的基准目录：下面的 @ 从项目根（frontend/）开始算
+    "baseUrl": ".",
+    // 路径别名：`@/services` → `frontend/src/services`，避免 ../../../ 这种相对路径地狱
+    "paths": {
+      "@/*": ["src/*"]
+    }
+  },
+  // 参与类型检查的文件范围：全局声明 + src 下的 ts/d.ts/vue + vite/vitest 配置 + 测试用例
+  // 测试目录也纳入：测试代码同样容易写出类型错误，交给 vue-tsc 一起把关
+  "include": [
+    "env.d.ts",
+    "src/**/*.ts",
+    "src/**/*.d.ts",
+    "src/**/*.vue",
+    "vite.config.ts",
+    "vitest.config.ts",
+    "tests/**/*.ts"
+  ]
+}
