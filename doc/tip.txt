@@ -1,0 +1,17 @@
+剩余工作量
+批次	内容	预估
+（无整块功能批次）	按 doc/20 §3.1 的尾巴只剩下面四条"未做实测 / 已知限制"的收口项，都不是新功能	—
+
+已完成：UX 收尾（@ 文件 / / 命令 / 模型胶囊、会话置顶归档导出、trace 回放 UI）—— 见 doc/23 §UX-4、§UX-8 与 doc/24 §5 验收项。
+已完成：TASK Phase 2（并查集传递闭包分道 + 车道并行、path_lock 线程锁、子任务级快照回滚、失败后重规划 + 确认链路）—— 见 doc/26 §5.2、§5.3、§15.4。
+已完成：EXT-3（net_guard 公共 SSRF 实现 + http_request + sql_query，两个工具都登记三态权限）与 EXT-4 A~D（office_cli 适配层 + Office 家族三类后缀切换 + 降级读取与拒绝入库）—— 见 doc/22 §3.0、§4.10。
+已完成：OPS-4 自动更新（electron-updater + 原生下载/安装对话框 + 「关于」页检查更新 + `publish` 配置 + 设置键 `ops.auto_update_check`）与 OPS-5 配置导入导出（`/api/settings/export|import` 脱敏 JSON + 设置页「配置迁移」分组）—— 见 doc/24 §4.2、§5.2。
+已完成：ARCH-6 执行中插话与取消工具（`services/steering.py` 会话队列 + 插话真实写进工具结果 + `POST /api/chat/{id}/steer` 与 `/tool-cancel` + `steer_injected` 事件落 trace + 前端「插话」按钮/工具卡片「取消」）与 ARCH-7 子 agent 隔离（`AgentScope` 进 `get_agent()`、SUB 只读工具集 + 独立迭代上限、policy 层 SUB 强制 ASK 红线）—— 见 doc/21 §4.6、§7.5 与 doc/20 附录十一。
+已完成：MEM 增强（`services/memory_embedding.py` 本地/远端双后端 embedding + 失败整批降级；近似重复改「合并」`_merge_into`；`search` 记录使用、`prune` 按 TTL 与工作区上限淘汰；`reindex` 重建向量 + `POST /api/memory/prune|reindex` + 设置页「整理/重建向量」按钮；迁移 0006）—— 见 doc/25 §14 与 doc/20 附录十二（370 个后端测试、124 个前端用例，两侧 typecheck 通过）。
+已完成：ARCH-7 接上调用方（新工具 `dispatch_subagent`：主对话把"只需要读"的子任务派给隔离只读子 agent，只回收结论；`llm/state.py` 缓存改多槽 + 指纹带开关；策略登记为 `Kind.READ`；设置页「Agent 行为」里的 `agent.subagent_enabled` 一打开即生效）—— 见 doc/21 §7.6 与 doc/20 附录十三（385 个后端测试、124 个前端用例）。
+
+未做（EXT-4 的 E 阶段，需桌面壳配合）：Electron 拉起 editor_sdk、设置页「Office 引擎」状态点、打包去掉 openpyxl hiddenimports；另需在有引擎的机器上手工验证 .xls / .doc / .ppt 旧二进制。
+未做（OPS-4 的真实发布验证）：`electron-builder.yml` 的 `publish.url` 仍是占位地址、也没有签名安装包，所以「发布新版 → 旧版检测 → 下载 → 重启安装」这条链路没有端到端跑过；正式发布前需上传一份带 `latest.yml` 的安装包到真实源再实测。
+未做（ARCH-7 的已知限制，见 doc/20 附录十三）：子 agent 的 token 不进 `_usage`（界面看不到它花了多少）、它的工具调用不进主对话 trace（只进后端日志）、子任务之间不共享发现（同一文件会读两遍）、子 agent 不能向用户提问（需要拍板方向的任务不该派出去）。
+未做（MEM 增强的已知限制，见 doc/25 §14.6）：本地后端只认字面（同义改写合并不了，要语义必须切远端 embedding）；远端失败降级是静默的，只能从设置页 `向量化：…已降级` 看出；合并不可撤销、不保留被合并的原文；`reindex` 同步执行、无分批与进度上报。
+建议下一步：剩下四条都属于**需要外部条件或产品决策才能推进**的收口项——优先顺序建议 ① EXT-4 E 阶段（要有 Office/WPS 的机器，把旧二进制后缀也验掉）② OPS-4 真实发布实测（要有可上传的发布源与签名包）③ 子 agent 的 `_usage` / trace 补记（纯代码，收益是"能看到它花了多少、干了什么"）④ MEM 远端 embedding 的降级提示改成可点开的诊断项。
