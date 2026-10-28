@@ -1,4 +1,4 @@
-// 模块说明：LangGraph4j 图运行时的基础 Bean。先把“检查点保存器”装配好，业务图由学习者实现。
+// 模块说明：LangGraph4j 图运行时的配置。检查点保存器本身由 GraphConfig 装配，本类只负责编译业务图。
 package com.example.backendjava.config;
 
 // Spring 配置注解：声明本类是配置类，容器启动时会解析其中的 @Bean 方法
@@ -52,8 +52,8 @@ public class AgentGraphConfig {
      * <p>TODO：把下面注释里的 StateGraph 代码补完，然后删掉 {@code return null; }。</p>
      *
      * <p>为什么这里**不**注入 {@code StreamingChatModel}：本项目不是「一个全局模型 Bean」的用法，
-     * 模型是每次请求按前端选的模型设置现建的（ChatServiceImpl.java:292 调用
-     * {@code llmModelFactoryRouter.createStreamingModel(spec)}，MemoryServiceImpl.java:951 同理）。
+     * 模型是每次请求按前端选的模型设置现建的（{@code ChatServiceImpl} 与 {@code MemoryServiceImpl}
+     * 里各自调用 {@code llmModelFactoryRouter.createStreamingModel(spec)}）。
      * 如果在这里声明 StreamingChatModel 形参，Spring 启动时会因为容器里没有该类型的 Bean
      * 直接报 {@code No qualifying bean of type 'dev.langchain4j.model.chat.StreamingChatModel'}。
      * 等真正实现图的时候，模型应当作为「每次执行图时传入的参数」处理，而不是在 Bean 装配阶段注入。</p>

@@ -157,8 +157,9 @@ router = APIRouter(prefix="/chat", tags=["chat"])
 # 这样它对 FAISS 索引的认知（进程内按维度共享同一份索引）与 Agent 工具完全一致
 _rag_svc = RagStoreService(chunk_size=500, overlap=80)
 
-# 补种上下文时最多回灌多少条历史消息：太多会挤占模型上下文、拖慢首字
-_RESEED_MAX_MESSAGES = 20
+# 补种上下文时最多回灌多少条历史消息：太多会挤占模型上下文、拖慢首字。
+# 数字本身放在契约表里（app/core/limits.py），这里只是给它一个本文件内的短名字
+_RESEED_MAX_MESSAGES = limits.DEFAULT_RESEED_MESSAGES
 # error 事件里异常信息最多下发多少字符：留够排查线索，又不至于把整段堆栈甩给前端
 _ERROR_MAX_CHARS = 300
 # `\doc -l` 最多列出多少篇文档（列太多会把回答刷得很长，剩下的用"另有 N 篇未列出"带过）

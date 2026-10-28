@@ -51,6 +51,11 @@ MAX_TRACE_EVENTS = 5000
 DEFAULT_RAG_DOCS = 50
 MAX_RAG_DOCS = 200
 
+# 补种上下文的条数：不是 HTTP 窗口，而是「重开旧会话时最多塞多少条历史给模型」。
+# 它没有上限校验的意义（超了也不会被用户传进来），Java 侧暂无对应逻辑，
+# 所以 PageLimits.java 里没有这一项——这是两侧唯一的非镜像常量，改动只影响 Python。
+DEFAULT_RESEED_MESSAGES = 20
+
 
 def clamp_limit(limit: int, maximum: int) -> int:
     """把 limit 夹到 ``1..maximum``，供 service / 工具等非 HTTP 入口兜底。

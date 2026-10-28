@@ -21,7 +21,7 @@ public class ChatSession {
 
     @Column(name = "pinned", nullable = false)
     private Boolean pinned = false;
-
+    /* 是否存档 */
     @Column(name = "archived", nullable = false)
     private Boolean archived = false;
 

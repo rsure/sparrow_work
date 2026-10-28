@@ -167,8 +167,8 @@ export interface DocumentInfo {
 /**
  * 对应后端 GET /rag/documents:分页查询已导入文档
  *
- * 不传 limit：每页多少条由后端契约表决定（默认 50、上限 200），
- * 前端只负责翻页（offset）。
+ * 不传 limit：每页条数由后端契约表决定（默认 50、上限 200），要改数字只改后端那张表。
+ * 目前文档列表界面一次只拉第一页（不传 offset）；将来要翻页，把 offset 传进来即可。
  *
  * @param offset 跳过的条数，默认 0
  */

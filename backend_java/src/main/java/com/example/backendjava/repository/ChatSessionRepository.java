@@ -23,20 +23,25 @@ import java.util.List;
 public interface ChatSessionRepository extends JpaRepository<ChatSession, String> {
 
     /**
-     * 查「未归档」会话：置顶优先、更新时间倒序（默认侧边栏列表用）。
+     * 查「未归档」会话：置顶优先、更新时间倒序。
      *
      * <p>{@code ArchivedFalse} 是写死条件（{@code archived = false}），所以没有入参。</p>
+     *
+     * <p><b>目前没有调用方</b>，保留它是为了和下面那条方法做对照：
+     * 同样查未归档，一个把条件写死在方法名里、一个有入参，读代码时一眼能看出两种写法的差别。
+     * 真正在用的一律是下面带 {@code boolean archived} 的那条。</p>
      *
      * @return 未归档会话列表
      */
     List<ChatSession> findByArchivedFalseOrderByPinnedDescUpdatedAtDesc();
 
     /**
-     * 按归档状态查会话：置顶优先、更新时间倒序（归档箱用）。
+     * 按归档状态查会话：置顶优先、更新时间倒序（侧边栏与归档箱都用它）。
      *
      * <p>名字里的 {@code Archived} 是一个<b>查询条件</b>而不是关键字，因此必须接收一个布尔入参：
      * 传 {@code true} 得到「已归档」的会话，传 {@code false} 得到「未归档」的会话
-     * （后者与 {@link #findByArchivedFalseOrderByPinnedDescUpdatedAtDesc()} 结果相同，列表页用上一条即可）。</p>
+     * （后者与 {@link #findByArchivedFalseOrderByPinnedDescUpdatedAtDesc()} 结果相同，
+     * 所以实际调用方只用这一条）。</p>
      *
      * @param archived 归档状态：true=只查归档箱，false=只查未归档
      * @return 符合条件的会话列表（置顶优先、更新时间倒序）
