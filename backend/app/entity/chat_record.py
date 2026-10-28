@@ -57,11 +57,17 @@ class ChatSession(Base):
         DateTime, nullable=False, server_default=func.current_timestamp()
     )
     # 最近一次写入消息的时间（UTC）：由服务层显式赋值（带微秒，排序比 CURRENT_TIMESTAMP 更准），
-    # 「最近会话」列表按它倒序；onupdate 是防止别处直接改行时漏更新的兜底
+    # 「最近会话」列表按它倒序。
+    #
+    # 这里刻意**不加** onupdate=func.current_timestamp()：SQLite 的 CURRENT_TIMESTAMP 只精确到秒，
+    # 而它一旦触发，就会把服务层写进来的微秒值截断成整秒——排序立刻出错。
+    # 触发条件并不罕见：同一秒内（更准确地说，同一个系统时钟节拍内）两次 _touch 会算出完全相同的
+    # 微秒值，SQLAlchemy 认为该列没变就不放进 UPDATE 的 SET，于是 onupdate 接手，写进 CURRENT_TIMESTAMP。
+    # 结果就是「更晚活跃的会话」排到了「更早的会话」后面（测试 test_ux_polish 里那条断言会假失败）。
+    # 兜底交给服务层：改会话行的地方都显式赋值（rename / set_session_flags 用 Core UPDATE 显式回写自身）。
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, nullable=False,
         server_default=func.current_timestamp(),
-        onupdate=func.current_timestamp(),
     )
 
     # 一对多关联：ChatSession.messages 取到本会话全部消息并按 id 升序（= 时间顺序）；
