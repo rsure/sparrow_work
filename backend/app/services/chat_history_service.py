@@ -271,8 +271,8 @@ def list_sessions(
 def get_messages(session_id: str, limit: int = limits.DEFAULT_CHAT_HISTORY) -> list[dict]:
     """取某个会话的消息，按时间升序返回（最早的在前）。
 
-    只关心消息列表的调用方（导出、上下文补种等）用这个；需要知道「更早的还有没有」的
-    用 :func:`get_messages_page`。
+    只关心消息列表的调用方（上下文补种等）用这个；需要知道「更早的还有没有」的
+    用 :func:`get_messages_page`，需要「一条不漏」的（导出）用 :func:`get_all_messages`。
 
     :param session_id: 会话 id
     :param limit: 最多返回多少条
@@ -310,6 +310,28 @@ def get_messages_page(session_id: str, limit: int = limits.DEFAULT_CHAT_HISTORY)
     return [_message_dict(m) for m in rows], has_more
 
 
+def get_all_messages(session_id: str) -> list[dict]:
+    """取某个会话的全部消息，按时间升序返回（不设窗口上限）。
+
+    为什么单独开一个函数，而不是 `get_messages(limit=5000)`：
+        分页函数会把 limit 夹到 MAX_CHAT_HISTORY（200）以内（见 app/core/limits.py 那张契约表），
+        导出几千条消息的会话时会被悄悄截掉前半段，用户拿到的文档「看起来完整、其实少了内容」。
+        这正是 docs/adr/0001-limit-越界一律报错.md 拒绝的「静默截断」——
+        所以「全量语义」的调用方（导出、备份）走这里，不经过分页窗口。
+
+    :param session_id: 会话 id
+    :return: 消息字典列表，字段与 :func:`_message_dict` 一致
+    """
+    with get_session() as s:
+        rows = list(s.scalars(
+            select(ChatMessage)
+            .where(ChatMessage.session_id == session_id)
+            # 按主键升序＝插入顺序＝时间顺序（与分页函数「倒序取最近 N 条再翻回来」等价）
+            .order_by(ChatMessage.id.asc())
+        ).all())
+    return [_message_dict(m) for m in rows]
+
+
 def _message_dict(m: ChatMessage) -> dict:
     """把一行消息实体转成接口返回的字典（字段名与前端 StoredChatMessage 对齐）。
 
@@ -343,7 +365,7 @@ def has_messages(session_id: str) -> bool:
         ) > 0
 
 
-def get_model_messages(session_id: str, limit: int = 20) -> list[dict]:
+def get_model_messages(session_id: str, limit: int = limits.DEFAULT_RESEED_MESSAGES) -> list[dict]:
     """取出该会话的历史消息，拼成模型可以直接吃的 messages 列表（补种上下文用）。
 
     过滤规则：
@@ -489,7 +511,8 @@ def export_session(session_id: str, fmt: str = "md") -> dict | None:
     :return: {"session_id","format","filename","content","message_count"}；
         会话不存在时返回 None
     """
-    messages = get_messages(session_id, limit=5000)
+    # 导出要「一条不漏」：走全量查询，不能用带 200 条窗口上限的分页函数
+    messages = get_all_messages(session_id)
     with get_session() as s:
         sess = s.get(ChatSession, session_id)
         if sess is None:

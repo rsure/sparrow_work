@@ -14,6 +14,8 @@ SQL（`?limit=1000000` 会把整库拉回来），Java 侧又另有一套 servic
 # 让类型注解延迟求值（PEP 563），便于使用 X | None 这类新语法
 from __future__ import annotations
 
+# JSON 解析：导出接口返回的是「文本套在 JSON 里」，要解析出来数消息条数
+import json
 # 每个用例用独立的会话 id，互不干扰（conftest 会在用例结束后清掉新增会话）
 import uuid
 
@@ -24,6 +26,10 @@ from fastapi.testclient import TestClient
 from app.main import app
 # 契约表的默认值/上限：断言「文档上写的数字」和「接口真的按这个数字校验」一致
 from app.core import limits
+# 直接写消息行：一次插 200+ 条时比逐条 append 快得多
+from app.db.db_config import get_session
+# 消息实体：批量造的「长会话」要用它
+from app.entity.chat_record import ChatMessage
 # 造历史消息用：往 SQLite 里写用户提问（不需要真实模型）
 from app.services.chat_history_service import append_user_message
 
@@ -121,3 +127,32 @@ def test_other_limit_endpoints_reject_zero_limit() -> None:
     assert client.get("/api/trace/sessions/whatever/turns", params={"limit": 0}).status_code == 422
     assert client.get("/api/trace/sessions/whatever", params={"limit": 0}).status_code == 422
     assert client.get("/api/rag/documents", params={"limit": 0}).status_code == 422
+
+
+def test_export_keeps_messages_beyond_history_window() -> None:
+    """导出是「全量」语义：消息条数超过 history 上限时也必须一条不少。
+
+    契约表统一之后，history 的分页函数会把 limit 夹到 MAX_CHAT_HISTORY（200）以内。
+    导出以前借用这个函数（`get_messages(limit=5000)`），超过 200 条的会话就会被悄悄截掉
+    前半段——用户拿到一份「看起来完整」的文档，其实少了内容，这正是
+    docs/adr/0001-limit-越界一律报错.md 明确拒绝的「静默截断」。
+    """
+    sid = _new_session()
+    # 第一条走正式入口：它会顺带建出会话行（标题由内容生成）
+    append_user_message(sid, "导出全量校验")
+    # 再补到超过 history 上限，制造一个「一页装不下」的长会话
+    total = limits.MAX_CHAT_HISTORY + 25
+    with get_session() as s:
+        s.add_all(
+            # 只填必要字段：role/content 是唯二 non-null 且无默认值的列
+            ChatMessage(session_id=sid, role="user", content=f"第 {i} 条")
+            for i in range(1, total)
+        )
+
+    body = client.get(
+        f"/api/chat/history/sessions/{sid}/export", params={"format": "json"},
+    ).json()
+    payload = json.loads(body["content"])
+    # 1 条正式提问 + (total - 1) 条批量插入，少一条都算截断
+    assert len(payload["messages"]) == total
+    assert body["message_count"] == total
