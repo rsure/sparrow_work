@@ -6,6 +6,10 @@ package com.example.backendjava.chat.runtime;
 
 // 标准库：时间与集合
 import java.time.Instant;
+// 标准库：可变列表，倒序结果要就地翻转
+import java.util.ArrayList;
+// 标准库：Collections.reverse 把倒序结果翻回升序
+import java.util.Collections;
 import java.util.List;
 import java.util.Optional;
 
@@ -15,7 +19,9 @@ import com.example.backendjava.entity.ChatSession;
 import com.example.backendjava.repository.ChatMessageRepository;
 import com.example.backendjava.repository.ChatSessionRepository;
 
-// Spring：单例
+// Spring Data：分页参数，用来把「只取最近 N 条」下推给 SQL 的 LIMIT
+import org.springframework.data.domain.Pageable;
+// Spring：把本类注册成容器里的单例 Bean
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -108,6 +114,26 @@ public class ChatPersistence {
     }
 
     /**
+     * 取一个会话最近 limit 条消息，按时间升序返回。
+     *
+     * <p><b>为什么单独开一个方法：</b>{@link #findMessages(String)} 会把整个会话的消息一次读进内存，
+     * 会话一长（几百条以上）就白读了大半。这里让 SQL 的 LIMIT 直接作用在尾部，
+     * 只读需要的那几条。</p>
+     *
+     * @param sessionId 会话 id
+     * @param limit     最多取多少条（调用方负责夹到合法范围，必须 ≥ 1）
+     * @return 消息列表，最老的在前
+     */
+    public List<ChatMessage> findRecentMessages(String sessionId, int limit) {
+        // 先倒序取「最新 limit 条」，SQL 里就是 ORDER BY id DESC LIMIT n
+        List<ChatMessage> newestFirst = new ArrayList<>(
+                messages.findBySessionIdOrderByIdDesc(sessionId, Pageable.ofSize(limit)));
+        // 翻回升序：对外顺序始终是「最早 → 最新」，视图层不需要再反转
+        Collections.reverse(newestFirst);
+        return newestFirst;
+    }
+
+    /**
      * 统计一个会话的消息条数。
      *
      * @param sessionId 会话 id
@@ -132,15 +158,15 @@ public class ChatPersistence {
     }
 
     /**
-     * 列会话：归档与否分两种排序。
+     * 列会话：按归档状态二选一，结果都按「置顶优先、更新时间倒序」排好。
      *
-     * @param archived 是否包含已归档
+     * @param archived 归档状态：true=只列归档箱（已归档的会话），false=只列未归档的会话
      * @return 会话列表（置顶优先、更新时间倒序）
      */
     public List<ChatSession> persistedSessions(boolean archived) {
-        return archived
-                ? sessions.findByArchivedOrderByPinnedDescUpdatedAtDesc()
-                : sessions.findByArchivedFalseOrderByPinnedDescUpdatedAtDesc();
+        // 归档箱和普通列表共用同一条派生查询：把条件当作参数传进去，不要在方法名里写死 true/false，
+        // 否则传进来的参数就没有意义了（也容易和 controller 的 ?archived= 语义对不上）
+        return sessions.findByArchivedOrderByPinnedDescUpdatedAtDesc(archived);
     }
 
 
