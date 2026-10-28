@@ -376,12 +376,15 @@ public final class ChatDtos {
      *
      * @param sessionId 会话 id
      * @param messages  按时间升序的消息列表
+     * @param hasMore   是否还有更早的消息没返回（true 时前端可以显示「加载更早」）
      */
     public record ChatHistory(
             // 会话 id
             @JsonProperty("session_id") String sessionId,
             // 消息列表
-            List<StoredChatMessage> messages
+            List<StoredChatMessage> messages,
+            // 更早的消息还有没有：由后端多取一条判断，不需要额外 COUNT
+            @JsonProperty("has_more") boolean hasMore
     ) {
     }
 

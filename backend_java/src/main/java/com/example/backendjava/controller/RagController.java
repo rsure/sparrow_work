@@ -21,8 +21,16 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RequestBody;
 // Jakarta 校验注解
 import jakarta.validation.Valid;
+// Jakarta 校验注解：limit 的下界（小于 1 直接 400）
+import jakarta.validation.constraints.Min;
+// Jakarta 校验注解：limit 的上界（超过上限直接 400）
+import jakarta.validation.constraints.Max;
+// Spring 校验开关：类上标了它，方法参数上的 @Min/@Max 才会被校验
+import org.springframework.validation.annotation.Validated;
 // 项目内统一响应外壳
 import com.example.backendjava.common.ApiResponse;
+// 项目内：limit 的默认值与上限契约表（Python 侧镜像在 app/core/limits.py）
+import com.example.backendjava.common.PageLimits;
 // 项目内业务异常：资源不存在
 import com.example.backendjava.common.ApiException;
 // 项目内 Service 获取工具
@@ -40,6 +48,7 @@ import java.util.Map;
 /**
  * RAG 文档库接口。
  */
+@Validated
 @RestController
 @RequestMapping("/rag")
 public class RagController {
@@ -142,7 +151,9 @@ public class RagController {
      */
     @GetMapping("/documents")
     public ApiResponse<List<RagDtos.RagDocument>> listDocuments(
-            @RequestParam(defaultValue = "50") int limit,
+            @RequestParam(defaultValue = "" + PageLimits.DEFAULT_RAG_DOCS)
+            // 以前这里是唯一没有上界的 limit（能一次拉全库），现在统一到契约表
+            @Min(1) @Max(PageLimits.MAX_RAG_DOCS) int limit,
             @RequestParam(defaultValue = "0") int offset
     ) {
         return ApiResponse.ok(ServiceSupport.require(ragService, "RAG 服务").listDocuments(limit, offset));

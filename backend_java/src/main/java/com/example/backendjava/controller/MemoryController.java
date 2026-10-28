@@ -21,6 +21,12 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RequestBody;
 // Jakarta 校验注解
 import jakarta.validation.Valid;
+// Jakarta 校验注解：limit 的下界（小于 1 直接 400）
+import jakarta.validation.constraints.Min;
+// Jakarta 校验注解：limit 的上界（超过上限直接 400）
+import jakarta.validation.constraints.Max;
+// Spring 校验开关：类上标了它，方法参数上的 @Min/@Max 才会被校验
+import org.springframework.validation.annotation.Validated;
 // Spring MVC 的 SSE 发射器
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 // 项目内 Service 获取工具
@@ -29,6 +35,8 @@ import com.example.backendjava.util.ServiceSupport;
 import com.example.backendjava.service.MemoryService;
 // 记忆接口的请求/响应 DTO 容器
 import com.example.backendjava.dto.MemoryDtos;
+// 项目内：limit 的默认值与上限契约表（Python 侧镜像在 app/core/limits.py）
+import com.example.backendjava.common.PageLimits;
 
 // 标准库：Map 用于动态返回结构
 import java.util.Map;
@@ -38,6 +46,7 @@ import java.util.Map;
  *
  * <p>Python 侧这些端点返回裸 JSON（不套 ApiResponse），这里保持兼容。</p>
  */
+@Validated
 @RestController
 @RequestMapping("/memory")
 public class MemoryController {
@@ -66,7 +75,9 @@ public class MemoryController {
     public Map<String, Object> list(
             @RequestParam(name = "workspace_id", required = false) String workspaceId,
             @RequestParam(required = false) String category,
-            @RequestParam(defaultValue = "100") int limit
+            @RequestParam(defaultValue = "" + PageLimits.DEFAULT_MEMORY)
+            // 与 Python 侧 Query(ge=1, le=500) 对齐：越界 400，不悄悄截断
+            @Min(1) @Max(PageLimits.MAX_MEMORY) int limit
     ) {
         return ServiceSupport.require(memoryService, "记忆服务").list(workspaceId, category, limit);
     }

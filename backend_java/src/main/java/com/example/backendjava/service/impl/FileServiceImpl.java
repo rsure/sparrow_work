@@ -38,6 +38,8 @@ import java.util.Set;
 
 // 项目内：业务异常（403/404 等业务码）
 import com.example.backendjava.common.ApiException;
+// 项目内：limit 的默认值与上限契约表（与 Python 侧 app/core/limits.py 一一对应）
+import com.example.backendjava.common.PageLimits;
 // 项目内：文件域 DTO（RawFile）
 import com.example.backendjava.dto.FileDtos;
 // 项目内：设置接口（读取当前生效工作区根目录）
@@ -211,7 +213,8 @@ public class FileServiceImpl implements FileService {
     public Map<String, Object> search(String query, int limit) {
         String rawQuery = query == null ? "" : query;
         String q = rawQuery.strip().toLowerCase(Locale.ROOT);
-        int maxResults = Math.max(1, Math.min(limit, 50));
+        // 上限 50 与 PageLimits.MAX_FILE_SEARCH 一致：越界由 controller 报 400，这里只兜底
+        int maxResults = PageLimits.clamp(limit, PageLimits.MAX_FILE_SEARCH);
         List<Path> roots = activeRoots();
 
         List<Candidate> matched = new ArrayList<>();

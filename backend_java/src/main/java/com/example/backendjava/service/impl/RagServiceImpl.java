@@ -68,6 +68,8 @@ import java.util.Set;
 
 // 项目内：业务异常（404/422 等业务码）
 import com.example.backendjava.common.ApiException;
+// 项目内：limit 的默认值与上限契约表（与 Python 侧 app/core/limits.py 一一对应）
+import com.example.backendjava.common.PageLimits;
 // 项目内：RAG 请求/响应 DTO
 import com.example.backendjava.dto.RagDtos;
 // 项目内：RAG 文档实体
@@ -633,10 +635,11 @@ public class RagServiceImpl implements RagService {
     @Override
     @Transactional(readOnly = true)
     public List<RagDtos.RagDocument> listDocuments(int limit, int offset) {
-        int pageSize = Math.max(1, limit);
+        // 以前这里只有下限没有上限，`?limit=1000000` 能一次拉全库；现在统一到契约表
+        int safeLimit = PageLimits.clamp(limit, PageLimits.MAX_RAG_DOCS);
         int start = Math.max(0, offset);
         List<RagDtos.RagDocument> result = new ArrayList<>();
-        for (RagDocument doc : documentRepository.pageNewest(pageSize, start)) {
+        for (RagDocument doc : documentRepository.pageNewest(safeLimit, start)) {
             long total = chunkRepository.countByDocumentId(doc.getId());
             result.add(new RagDtos.RagDocument(
                     doc.getId(),

@@ -628,21 +628,24 @@ export interface StoredChatMessage {
 /**
  * 拉取会话列表（数据来自后端 SQLite，重启后端也不会丢）。
  *
- * @param limit 最多取多少个会话，缺省 20
+ * 这里不传 limit：条数上限与默认值只由后端 `PageLimits` / `limits.py` 决定，
+ * 前端硬编码 20 只会制造「请求 20 条、后端默认其实是别的数」这类对不上的情况。
+ *
  * @param query 搜索关键词（命中标题或消息正文）；空表示不过滤
  * @param archived 取哪一箱：false=正常列表（默认），true=归档箱
  * @returns 按「置顶优先 + 最近活跃时间倒序」排好的会话列表
  */
 export async function list_chat_sessions(
-  limit = 20,
   query = '',
   archived = false,
 ): Promise<ChatSessionInfo[]> {
   // 关键词要编码：用户可能输入空格、#、& 等会破坏 query string 的字符
-  const suffix = query.trim() ? `&q=${encodeURIComponent(query.trim())}` : ''
-  const box = archived ? '&archived=true' : ''
+  const keyword = query.trim() ? `q=${encodeURIComponent(query.trim())}` : ''
+  const box = archived ? 'archived=true' : ''
+  // 只拼真正的参数；都没传时连问号都不带，避免发出 `/chat/sessions?` 这种空查询
+  const search = [keyword, box].filter(Boolean).join('&')
   const data = await chatJson<{ sessions: ChatSessionInfo[] }>(
-    `/chat/sessions?limit=${limit}${suffix}${box}`,
+    `/chat/sessions${search ? `?${search}` : ''}`,
   )
   return data.sessions
 }
@@ -779,13 +782,16 @@ export function fetch_session_usage(sessionId: string): Promise<SessionUsage> {
 /**
  * 取某个旧会话的完整消息，供页面回填气泡。
  *
+ * 这里不传 limit：窗口大小（默认 200 条，也就是最近 200 条）只由后端决定。
+ * 响应里还带 `has_more`（更早的还有没有），目前页面不消费它——
+ * 等做「加载更早」时从这里接，不要在前端再猜一个数字。
+ *
  * @param sessionId 会话 id
- * @param limit 最多取多少条，缺省 200（超出时后端返回最近的那些）
  * @returns 按时间升序的消息列表
  */
-export async function get_chat_messages(sessionId: string, limit = 200): Promise<StoredChatMessage[]> {
-  const data = await chatJson<{ session_id: string; messages: StoredChatMessage[] }>(
-    `/chat/history/sessions/${encodeURIComponent(sessionId)}?limit=${limit}`,
+export async function get_chat_messages(sessionId: string): Promise<StoredChatMessage[]> {
+  const data = await chatJson<{ session_id: string; messages: StoredChatMessage[]; has_more: boolean }>(
+    `/chat/history/sessions/${encodeURIComponent(sessionId)}`,
   )
   return data.messages
 }

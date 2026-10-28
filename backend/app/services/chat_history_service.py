@@ -27,6 +27,9 @@ from sqlalchemy import func, or_, select, update
 
 # 项目内：会话上下文管理器（自动 commit / rollback / close）
 from app.db.db_config import get_session
+# 项目内：limit 的默认值与上限契约表（与 Java 侧 PageLimits 一一对应；本模块是非 HTTP 入口，
+# 用 clamp_limit 兜底，保证直接调用本服务也拿不到超限的结果）
+from app.core import limits
 # 项目内：两个 ORM 实体，本模块所有读写都围绕它们
 from app.entity.chat_record import ChatMessage, ChatSession
 
@@ -191,7 +194,7 @@ def append_assistant_turn(
 
 
 def list_sessions(
-    limit: int = 20,
+    limit: int = limits.DEFAULT_CHAT_SESSIONS,
     query: str | None = None,
     *,
     archived: bool = False,
@@ -212,6 +215,8 @@ def list_sessions(
     :param archived: True=只要归档的，False=只要未归档的（两个"箱子"分开看，不混在一起）
     :return: 会话字典列表，每项含会话 id、标题、消息条数、起止时间、置顶/归档标记与最后一条消息预览
     """
+    # 非 HTTP 入口（导出、脚本）传进来的值也要落在合法区间内
+    limit = limits.clamp_limit(limit, limits.MAX_CHAT_SESSIONS)
     keyword = (query or "").strip()
     with get_session() as s:
         stmt = (
@@ -263,40 +268,67 @@ def list_sessions(
         return out
 
 
-def get_messages(session_id: str, limit: int = 200) -> list[dict]:
+def get_messages(session_id: str, limit: int = limits.DEFAULT_CHAT_HISTORY) -> list[dict]:
     """取某个会话的消息，按时间升序返回（最早的在前）。
 
-    消息超过 limit 条时保留**最近**的 limit 条：打开一个很长的旧会话时，
-    用户想看的是最近的上下文，而不是几个月前的第一句。
+    只关心消息列表的调用方（导出、上下文补种等）用这个；需要知道「更早的还有没有」的
+    用 :func:`get_messages_page`。
 
     :param session_id: 会话 id
     :param limit: 最多返回多少条
     :return: 消息字典列表，每项含 role / content / mode / tool_calls / finish_reason / elapsed / created_at
     """
+    messages, _has_more = get_messages_page(session_id, limit=limit)
+    return messages
+
+
+def get_messages_page(session_id: str, limit: int = limits.DEFAULT_CHAT_HISTORY) -> tuple[list[dict], bool]:
+    """取某个会话最近的 limit 条消息，并告知「更早的还有没有」。
+
+    为什么多取一条：一次 SQL 就能同时得到「这一页」和「还有没有更早的」，
+    不需要额外 COUNT。返回顺序仍是时间正序。
+
+    :param session_id: 会话 id
+    :param limit: 最多返回多少条（HTTP 入口由 Query(ge=1, le=MAX) 保证合法）
+    :return: (消息字典列表, 是否还有更早的消息)
+    """
+    # 与 list_sessions 同理：非 HTTP 入口传进来的值也要夹到区间内
+    limit = limits.clamp_limit(limit, limits.MAX_CHAT_HISTORY)
     with get_session() as s:
         rows = list(s.scalars(
             select(ChatMessage)
             .where(ChatMessage.session_id == session_id)
             .order_by(ChatMessage.id.desc())
-            .limit(limit)
+            # 多取一条，只用来判断 has_more
+            .limit(limit + 1)
         ).all())
+    has_more = len(rows) > limit
+    if has_more:
+        # 丢掉的这条是最早的一条，属于「下一页」
+        rows = rows[:limit]
     rows.reverse()      # 上面按 id 倒序取"最近 N 条"，这里翻回升序（= 时间顺序）
-    return [
-        {
-            "id": m.id,
-            "role": m.role,
-            "content": m.content or "",
-            "mode": m.mode,
-            "tool_calls": m.tool_calls,
-            "finish_reason": m.finish_reason,
-            "elapsed": m.elapsed,
-            # UX-5：历史消息也带用量与模型，打开旧会话时面板能立刻算出累计
-            "usage": m.usage_json,
-            "model": m.model,
-            "created_at": _to_iso(m.created_at),
-        }
-        for m in rows
-    ]
+    return [_message_dict(m) for m in rows], has_more
+
+
+def _message_dict(m: ChatMessage) -> dict:
+    """把一行消息实体转成接口返回的字典（字段名与前端 StoredChatMessage 对齐）。
+
+    :param m: ChatMessage 实体
+    :return: 单个消息字典
+    """
+    return {
+        "id": m.id,
+        "role": m.role,
+        "content": m.content or "",
+        "mode": m.mode,
+        "tool_calls": m.tool_calls,
+        "finish_reason": m.finish_reason,
+        "elapsed": m.elapsed,
+        # UX-5：历史消息也带用量与模型，打开旧会话时面板能立刻算出累计
+        "usage": m.usage_json,
+        "model": m.model,
+        "created_at": _to_iso(m.created_at),
+    }
 
 
 def has_messages(session_id: str) -> bool:
@@ -359,9 +391,9 @@ def rename_session(session_id: str, title: str) -> bool:
     """
     clean = _make_title(title)
     with get_session() as s:
-        # 用 Core UPDATE 而不是改 ORM 对象：ChatSession.updated_at 配了 onupdate，
-        # 只要发生 UPDATE 就会被刷成当前时间（秒精度），会话会被顶到列表最前面。
-        # 这里显式把 updated_at 赋成它自己，既能阻止 onupdate，又保住原来的微秒精度。
+        # 用 Core UPDATE 而不是改 ORM 对象：改名不该算「活跃」，会话不该被顶到列表最前面。
+        # 显式把 updated_at 赋成它自己（SQL 里是 updated_at = updated_at），
+        # 这样这一列的微秒精度原样保留，不必依赖「有没有别的写入碰过它」。
         result = s.execute(
             update(ChatSession)
             .where(ChatSession.session_id == session_id)
@@ -381,9 +413,9 @@ def set_session_flags(
     两个参数都是"省略即不改"，所以同一个接口能表达四种操作：
         置顶 / 取消置顶 / 归档 / 取消归档（也可以一次同时改两项）。
 
-    为什么用 Core UPDATE 而不是改 ORM 对象：ChatSession.updated_at 配了 onupdate，
-    改置顶这事**不该**把会话顶到「最近」列表最前面（置顶有自己的排序位）。
-    这里显式把 updated_at 赋成它自己，既阻止 onupdate、又保住原来的微秒精度。
+    为什么用 Core UPDATE 而不是改 ORM 对象：改置顶这事**不该**把会话顶到「最近」列表最前面
+    （置顶有自己的排序位）。这里显式把 updated_at 赋成它自己（SQL 里是 updated_at = updated_at），
+    这一列因此原地不动，微秒精度也原样保留。
 
     :param session_id: 会话 id
     :param pinned: 是否置顶；None 表示不改

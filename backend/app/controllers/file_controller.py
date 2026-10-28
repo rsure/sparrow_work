@@ -16,6 +16,8 @@ from fastapi.responses import FileResponse
 from app.services import file_browse_service
 # 项目内：统一响应外壳
 from app.schemas.common import ApiResponse
+# 项目内：limit 的默认值与上限契约表（Java 侧镜像在 backend_java 的 common/PageLimits.java）
+from app.core import limits
 
 # 本模块路由，由 app/api/router.py 挂载
 router = APIRouter(prefix="/file", tags=["file"])
@@ -42,7 +44,12 @@ async def file_preview(
 @router.get("/search", summary="在当前工作区里按文件名搜索（输入框 `@` 的候选）")
 async def file_search(
     q: str = Query(default="", description="搜索关键词：匹配文件名或相对路径，空表示随便列一些"),
-    limit: int = Query(default=20, ge=1, le=50, description="最多返回多少条候选"),
+    limit: int = Query(
+        default=limits.DEFAULT_FILE_SEARCH,
+        ge=1,
+        le=limits.MAX_FILE_SEARCH,
+        description="最多返回多少条候选，默认 20、上限 50；越界报 422",
+    ),
 ) -> ApiResponse[dict]:
     """给输入框的 `@` 候选列表用：在**当前工作区**里按文件名/相对路径模糊搜索。
 

@@ -11,8 +11,16 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 // Spring Web 注解：查询参数
 import org.springframework.web.bind.annotation.RequestParam;
+// Jakarta 校验注解：limit 的下界（小于 1 直接 400）
+import jakarta.validation.constraints.Min;
+// Jakarta 校验注解：limit 的上界（超过上限直接 400）
+import jakarta.validation.constraints.Max;
+// Spring 校验开关：类上标了它，方法参数上的 @Min/@Max 才会被校验
+import org.springframework.validation.annotation.Validated;
 // 项目内统一响应外壳
 import com.example.backendjava.common.ApiResponse;
+// 项目内：limit 的默认值与上限契约表（Python 侧镜像在 app/core/limits.py）
+import com.example.backendjava.common.PageLimits;
 // 项目内 Service 获取工具
 import com.example.backendjava.util.ServiceSupport;
 // 审计业务接口：工具调用记录查询
@@ -26,6 +34,7 @@ import java.util.Map;
 /**
  * 审计查询接口。
  */
+@Validated
 @RestController
 @RequestMapping("/audit")
 public class AuditController {
@@ -54,7 +63,9 @@ public class AuditController {
     public ApiResponse<List<Map<String, Object>>> list(
             @RequestParam(name = "session_id", required = false) String sessionId,
             @RequestParam(required = false) String tool,
-            @RequestParam(defaultValue = "100") int limit
+            @RequestParam(defaultValue = "" + PageLimits.DEFAULT_AUDIT)
+            // 与 Python 侧 Query(ge=1, le=500) 对齐：越界 400，不悄悄截断
+            @Min(1) @Max(PageLimits.MAX_AUDIT) int limit
     ) {
         return ApiResponse.ok(
                 ServiceSupport.require(auditService, "审计服务").list(sessionId, tool, limit)

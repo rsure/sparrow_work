@@ -10,6 +10,8 @@ from fastapi import APIRouter, Query
 from pydantic import BaseModel, Field
 # 项目内：统一响应外壳，保证所有接口返回同一种 JSON 形状
 from app.schemas.common import ApiResponse
+# 项目内：limit 的默认值与上限契约表（Java 侧镜像在 backend_java 的 common/PageLimits.java）
+from app.core import limits
 # 项目内：文档库业务逻辑（切块、调用向量模型、检索、读写 SQLite 与 FAISS）
 from app.services.rag_store_service import RagStoreService
 
@@ -149,7 +151,15 @@ def get_doc(doc_id: int):
 
 
 @router.get("/documents", response_model=ApiResponse[list[dict]])
-def list_docs(limit: int = 50, offset: int = 0):
+def list_docs(
+    limit: int = Query(
+        limits.DEFAULT_RAG_DOCS,
+        ge=1,
+        le=limits.MAX_RAG_DOCS,
+        description="本次最多返回多少条，默认 50、上限 200；越界报 422",
+    ),
+    offset: int = 0,
+):
     """分页列出文档库中的文档，供前端文档列表页展示。
 
     :param limit: 本次最多返回多少条，默认 50

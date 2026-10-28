@@ -68,12 +68,13 @@ export interface TraceEventRow {
 /**
  * 拉取"有轨迹的会话"列表（回放页的左栏）。
  *
- * @param limit 最多取多少个会话（后端上限 200）
+ * 不传 limit：条数由后端契约表决定（默认 50、上限 200）。
+ *
  * @returns 按最近有轨迹倒序排好的会话
  */
-export async function list_trace_sessions(limit = 50): Promise<TraceSessionRow[]> {
+export async function list_trace_sessions(): Promise<TraceSessionRow[]> {
   const data = await fetchRawJson<{ sessions?: TraceSessionRow[] }>(
-    `/trace/sessions?limit=${limit}`,
+    '/trace/sessions',
   )
   return data.sessions ?? []
 }
@@ -81,13 +82,14 @@ export async function list_trace_sessions(limit = 50): Promise<TraceSessionRow[]
 /**
  * 拉取某个会话的轮次列表（回放页的中栏）。
  *
+ * 不传 limit：条数由后端契约表决定（默认 50、上限 200）。
+ *
  * @param sessionId 会话 id
- * @param limit 最多取多少轮（后端上限 200）
  * @returns 按最近一轮在前排好的轮次
  */
-export async function list_trace_turns(sessionId: string, limit = 50): Promise<TraceTurnRow[]> {
+export async function list_trace_turns(sessionId: string): Promise<TraceTurnRow[]> {
   const data = await fetchRawJson<{ turns?: TraceTurnRow[] }>(
-    `/trace/sessions/${encodeURIComponent(sessionId)}/turns?limit=${limit}`,
+    `/trace/sessions/${encodeURIComponent(sessionId)}/turns`,
   )
   return data.turns ?? []
 }
@@ -95,20 +97,20 @@ export async function list_trace_turns(sessionId: string, limit = 50): Promise<T
 /**
  * 读取轨迹事件。
  *
+ * 不传 limit：条数由后端契约表决定（默认 500、上限 5000）。
+ *
  * @param sessionId 会话 id
  * @param turnId 只看某一轮；不传则返回整个会话（按写入顺序）
- * @param limit 最多返回多少条（后端上限 5000）
  * @returns 按 seq（限定轮次时）或写入顺序（整个会话时）排好的事件
  */
 export async function fetch_trace_events(
   sessionId: string,
   turnId?: string,
-  limit = 500,
 ): Promise<TraceEventRow[]> {
   // turn_id 只在要限定轮次时拼进 query，避免传空串让后端误以为要筛空轮次
-  const turn = turnId ? `&turn_id=${encodeURIComponent(turnId)}` : ''
+  const turn = turnId ? `?turn_id=${encodeURIComponent(turnId)}` : ''
   const data = await fetchRawJson<{ events?: TraceEventRow[] }>(
-    `/trace/sessions/${encodeURIComponent(sessionId)}?limit=${limit}${turn}`,
+    `/trace/sessions/${encodeURIComponent(sessionId)}${turn}`,
   )
   return data.events ?? []
 }

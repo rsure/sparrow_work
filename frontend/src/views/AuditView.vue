@@ -21,7 +21,8 @@ const loading = ref(false)
 async function loadLogs(): Promise<void> {
   loading.value = true
   try {
-    logs.value = await fetch_audit_logs({ limit: 200 })
+    // 不传 limit：返回多少条由后端契约表决定（默认 100、上限 500）
+    logs.value = await fetch_audit_logs()
   } catch (error) {
     console.error('加载审计记录失败:', error)
     showToast('加载审计记录失败')

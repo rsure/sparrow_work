@@ -37,6 +37,8 @@ from pydantic import BaseModel, Field
 
 # 项目内：记忆服务
 from app.services import memory_service
+# 项目内：limit 的默认值与上限契约表（Java 侧镜像在 backend_java 的 common/PageLimits.java）
+from app.core import limits
 
 
 # 本模块的路由，由 app/api/router.py 挂载（统一前缀 /api）
@@ -99,7 +101,12 @@ class MemoryMaintenanceRequest(BaseModel):
 async def list_memories(
     workspace_id: str | None = Query(None, description="工作区 id；省略表示当前工作区"),
     category: str | None = Query(None, description="只看某一类：preference / decision / fact / todo"),
-    limit: int = Query(100, ge=1, le=500, description="最多返回多少条"),
+    limit: int = Query(
+        limits.DEFAULT_MEMORY,
+        ge=1,
+        le=limits.MAX_MEMORY,
+        description="最多返回多少条，默认 100、上限 500；越界报 422",
+    ),
 ) -> dict:
     """按重要度、时间倒序列出记忆。
 

@@ -29,18 +29,19 @@ export interface AuditLogEntry {
 /**
  * 查询工具调用审计记录（按时间倒序）。
  *
- * @param params 可选过滤：session_id 只看某个会话、tool 只看某个工具、limit 最多返回多少条
+ * 这里不传 limit：条数由后端契约表决定（默认 100、上限 500），
+ * 前端再写一个 200 只会让「界面上看到几条」变成没人负责的数字。
+ *
+ * @param params 可选过滤：session_id 只看某个会话、tool 只看某个工具
  */
 export function fetch_audit_logs(params?: {
   session_id?: string
   tool?: string
-  limit?: number
 }): Promise<AuditLogEntry[]> {
   // 显式声明成 Record，避免把可选字段对象直接塞给 get() 时触发索引签名缺失的报错
   const query: Record<string, string | number | undefined> = {
     session_id: params?.session_id,
     tool: params?.tool,
-    limit: params?.limit,
   }
   return get<AuditLogEntry[]>('/audit', query)
 }

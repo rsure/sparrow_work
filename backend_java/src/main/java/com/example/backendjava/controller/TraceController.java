@@ -13,10 +13,18 @@ import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 // Spring Web 注解：查询参数
 import org.springframework.web.bind.annotation.RequestParam;
+// Jakarta 校验注解：limit 的下界（小于 1 直接 400）
+import jakarta.validation.constraints.Min;
+// Jakarta 校验注解：limit 的上界（超过上限直接 400）
+import jakarta.validation.constraints.Max;
+// Spring 校验开关：类上标了它，方法参数上的 @Min/@Max 才会被校验
+import org.springframework.validation.annotation.Validated;
 // 项目内 Service 获取工具
 import com.example.backendjava.util.ServiceSupport;
 // 轨迹业务接口：执行事件按会话/轮次查询
 import com.example.backendjava.service.TraceService;
+// 项目内：limit 的默认值与上限契约表（Python 侧镜像在 app/core/limits.py）
+import com.example.backendjava.common.PageLimits;
 
 // 标准库：Map 用于动态轨迹结构
 import java.util.Map;
@@ -26,6 +34,7 @@ import java.util.Map;
  *
  * <p>Python 侧这三个端点返回裸 JSON，这里保持兼容。</p>
  */
+@Validated
 @RestController
 @RequestMapping("/trace")
 public class TraceController {
@@ -49,7 +58,11 @@ public class TraceController {
      * @return 会话列表
      */
     @GetMapping("/sessions")
-    public Map<String, Object> listSessions(@RequestParam(defaultValue = "50") int limit) {
+    public Map<String, Object> listSessions(
+            @RequestParam(defaultValue = "" + PageLimits.DEFAULT_TRACE_SESSIONS)
+            // 越界 400：与 Python 侧 Query(ge=1, le=200) 对齐
+            @Min(1) @Max(PageLimits.MAX_TRACE_SESSIONS) int limit
+    ) {
         return ServiceSupport.require(traceService, "轨迹服务").listSessions(limit);
     }
 
@@ -63,7 +76,9 @@ public class TraceController {
     @GetMapping("/sessions/{sessionId}/turns")
     public Map<String, Object> listTurns(
             @PathVariable String sessionId,
-            @RequestParam(defaultValue = "50") int limit
+            @RequestParam(defaultValue = "" + PageLimits.DEFAULT_TRACE_TURNS)
+            // 越界 400：轮次上限 200，再多就应该分批看而不是一次拉完
+            @Min(1) @Max(PageLimits.MAX_TRACE_TURNS) int limit
     ) {
         return ServiceSupport.require(traceService, "轨迹服务").listTurns(sessionId, limit);
     }
@@ -80,7 +95,9 @@ public class TraceController {
     public Map<String, Object> listEvents(
             @PathVariable String sessionId,
             @RequestParam(name = "turn_id", required = false) String turnId,
-            @RequestParam(defaultValue = "500") int limit
+            @RequestParam(defaultValue = "" + PageLimits.DEFAULT_TRACE_EVENTS)
+            // 排查一次通常要看几百条事件，上限放宽到 5000；越界同样是 400
+            @Min(1) @Max(PageLimits.MAX_TRACE_EVENTS) int limit
     ) {
         return ServiceSupport.require(traceService, "轨迹服务").listEvents(sessionId, turnId, limit);
     }

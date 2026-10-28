@@ -125,7 +125,8 @@ function togglePayload(id: number): void {
 async function loadSessions(): Promise<void> {
   loadingSessions.value = true
   try {
-    sessions.value = await list_trace_sessions(50)
+    // 会话条数交给后端契约表（默认 50、上限 200），这里不传 limit
+    sessions.value = await list_trace_sessions()
   } catch (error) {
     console.error('加载轨迹会话失败:', error)
     showToast('加载轨迹失败，请确认诊断里的轨迹开关已打开')
@@ -143,7 +144,8 @@ async function loadSessions(): Promise<void> {
 async function loadEvents(sessionId: string, turnId: string): Promise<void> {
   loadingDetail.value = true
   try {
-    events.value = await fetch_trace_events(sessionId, turnId || undefined, 500)
+    // 事件条数交给后端契约表（默认 500、上限 5000），这里不传 limit
+    events.value = await fetch_trace_events(sessionId, turnId || undefined)
     // 换了一批事件，之前的展开状态就没意义了
     expanded.value = []
   } catch (error) {
@@ -166,7 +168,8 @@ async function selectSession(sessionId: string): Promise<void> {
   turns.value = []
   loadingDetail.value = true
   try {
-    turns.value = await list_trace_turns(sessionId, 50)
+    // 轮次条数交给后端契约表（默认 50、上限 200），这里不传 limit
+    turns.value = await list_trace_turns(sessionId)
   } catch (error) {
     console.error('加载轮次失败:', error)
     showToast('加载轮次失败')

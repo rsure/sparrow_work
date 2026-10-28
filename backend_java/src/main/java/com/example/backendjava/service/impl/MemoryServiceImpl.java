@@ -49,6 +49,8 @@ import java.util.stream.Collectors;
 
 // 项目内：业务异常（缺密钥 / 未知供应商时给可读提示）
 import com.example.backendjava.common.ApiException;
+// 项目内：limit 的默认值与上限契约表（与 Python 侧 app/core/limits.py 一一对应）
+import com.example.backendjava.common.PageLimits;
 // 项目内：模型供应商/模型 DTO（装配模型参数）
 import com.example.backendjava.dto.LlmDtos;
 // 项目内：装配模型实例所需的参数
@@ -420,7 +422,8 @@ public class MemoryServiceImpl implements MemoryService {
         }
         rows.sort(BY_IMPORTANCE_TIME_DESC);
 
-        int cap = clamp(limit, 1, 500);
+        // 上限同样走契约表：以前这里的 500 是就地写死的，与 Python 侧没有共同来源
+        int cap = PageLimits.clamp(limit, PageLimits.MAX_MEMORY);
         List<Map<String, Object>> memories = new ArrayList<>();
         for (MemoryItem row : rows) {
             if (memories.size() >= cap) {

@@ -104,6 +104,8 @@ from pydantic import BaseModel, Field
 from app.agents.rag_agent import agent, checkpointer, model
 # 项目内：对话记录持久化服务（每轮落库、最近会话列表、旧会话消息、补种上下文）
 from app.services import chat_history_service as history
+# 项目内：limit 的默认值与上限契约表（Java 侧镜像在 backend_java 的 common/PageLimits.java）
+from app.core import limits
 # 项目内：RAG 文档库服务，`\doc` 指令直接在它上面检索与删除，不经过模型
 from app.services.rag_store_service import RagStoreService
 # 项目内：知识库工具的复用入口——
@@ -3222,7 +3224,17 @@ async def chat_resume(req: ChatResumeRequest, http_request: Request) -> Streamin
 
 
 @router.get("/sessions", summary="最近会话列表（读 SQLite 的对话记录，支持搜索 / 置顶 / 归档）")
-async def list_sessions(limit: int = 20, q: str | None = None, archived: bool = False) -> dict:
+async def list_sessions(
+    # 默认值只表达「不传」；显式越界（<1 或 >上限）由 FastAPI 直接报 422，不做悄悄截断
+    limit: int = Query(
+        limits.DEFAULT_CHAT_SESSIONS,
+        ge=1,
+        le=limits.MAX_CHAT_SESSIONS,
+        description="最多返回多少个会话，默认 20、上限 100；越界报 422",
+    ),
+    q: str | None = None,
+    archived: bool = False,
+) -> dict:
     """列出最近的会话，供前端左栏「最近会话」展示。
 
     数据来自 SQLite（app/entity/chat_record.py），所以后端重启、会话过期都不影响它。
@@ -3243,16 +3255,27 @@ async def list_sessions(limit: int = 20, q: str | None = None, archived: bool = 
 
 
 @router.get("/history/sessions/{session_id}", summary="某个会话的历史消息")
-async def get_history_messages(session_id: str, limit: int = 200) -> dict:
+async def get_history_messages(
+    session_id: str,
+    # 与 Java 侧 @Min(1) @Max(200) 对齐：默认值即上限，再往前翻由响应里的 has_more 提示
+    limit: int = Query(
+        limits.DEFAULT_CHAT_HISTORY,
+        ge=1,
+        le=limits.MAX_CHAT_HISTORY,
+        description="最多返回多少条历史消息，默认 200、上限 200；越界报 422",
+    ),
+) -> dict:
     """取出某个会话落库的消息，供前端打开旧会话时回填气泡。
 
-    消息超过 limit 条时返回最近的 limit 条（见 chat_history_service.get_messages）。
+    消息超过 limit 条时返回**最近**的 limit 条，并用 has_more 告知「更早的还有没有」，
+    这样前端可以决定要不要显示「加载更早」，而不是傻猜自己是不是拿到了全部。
 
     :param session_id: 会话 id
     :param limit: 最多返回多少条，默认 200
-    :return: {"session_id": ..., "messages": [...]}；会话不存在时 messages 为空数组
+    :return: {"session_id": ..., "messages": [...], "has_more": bool}；会话不存在时 messages 为空数组
     """
-    return {"session_id": session_id, "messages": history.get_messages(session_id, limit=limit)}
+    messages, has_more = history.get_messages_page(session_id, limit=limit)
+    return {"session_id": session_id, "messages": messages, "has_more": has_more}
 
 
 class ChatRenameRequest(BaseModel):

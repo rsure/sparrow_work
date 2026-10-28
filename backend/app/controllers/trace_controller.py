@@ -23,6 +23,8 @@ from fastapi import APIRouter, Query
 from app.services import chat_history_service
 # 项目内：轨迹服务
 from app.services import trace_service
+# 项目内：limit 的默认值与上限契约表（Java 侧镜像在 backend_java 的 common/PageLimits.java）
+from app.core import limits
 
 
 # 本模块的路由，由 app/api/router.py 挂载（统一前缀 /api）
@@ -31,7 +33,12 @@ router = APIRouter(prefix="/trace", tags=["trace"])
 
 @router.get("/sessions", summary="列出有执行轨迹的会话（回放页入口）")
 async def list_trace_sessions(
-    limit: int = Query(50, ge=1, le=200, description="最多返回多少个会话，按最近有轨迹倒序"),
+    limit: int = Query(
+        limits.DEFAULT_TRACE_SESSIONS,
+        ge=1,
+        le=limits.MAX_TRACE_SESSIONS,
+        description="最多返回多少个会话，默认 50、上限 200；按最近有轨迹倒序",
+    ),
 ) -> dict:
     """列出"跑过 Agent、留下了轨迹"的会话。
 
@@ -51,7 +58,12 @@ async def list_trace_sessions(
 @router.get("/sessions/{session_id}/turns", summary="列出某个会话的执行轮次")
 async def list_trace_turns(
     session_id: str,
-    limit: int = Query(50, ge=1, le=200, description="最多返回多少轮，按最近倒序"),
+    limit: int = Query(
+        limits.DEFAULT_TRACE_TURNS,
+        ge=1,
+        le=limits.MAX_TRACE_TURNS,
+        description="最多返回多少轮，默认 50、上限 200；按最近倒序",
+    ),
 ) -> dict:
     """列出该会话里的轮次（回放的最小单位）。
 
@@ -67,7 +79,12 @@ async def list_trace_turns(
 async def list_trace(
     session_id: str,
     turn_id: str | None = Query(None, description="只看某一轮；不传则返回整个会话"),
-    limit: int = Query(500, ge=1, le=5000, description="最多返回多少条"),
+    limit: int = Query(
+        limits.DEFAULT_TRACE_EVENTS,
+        ge=1,
+        le=limits.MAX_TRACE_EVENTS,
+        description="最多返回多少条，默认 500、上限 5000；越界报 422",
+    ),
 ) -> dict:
     """按顺序返回轨迹事件。
 

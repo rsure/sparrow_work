@@ -1,6 +1,8 @@
 package com.example.backendjava.service.impl;
 
 import com.example.backendjava.entity.AuditLog;
+// 项目内：limit 的默认值与上限契约表（与 Python 侧 app/core/limits.py 一一对应）
+import com.example.backendjava.common.PageLimits;
 import com.example.backendjava.repository.AuditLogRepository;
 import com.example.backendjava.service.AuditService;
 import jakarta.annotation.Resource;
@@ -23,7 +25,8 @@ public class AuditServiceImpl implements AuditService {
     @Override
     public List<Map<String, Object>> list(String sessionId, String tool, int limit) {
         // 分页与过滤都在数据库侧完成，避免把整表加载进内存
-        Pageable pageable = PageRequest.of(0, limit <= 0 ? 100 : limit,
+        // limit 的上限由 controller 的 @Max 拦过，这里再夹一次是给「内部直接调用」兜底
+        Pageable pageable = PageRequest.of(0, PageLimits.clamp(limit, PageLimits.MAX_AUDIT),
                 Sort.by(Sort.Direction.DESC, "id"));
         Specification<AuditLog> spec = Specification.unrestricted();
         if (sessionId != null && !sessionId.isBlank()) {

@@ -197,9 +197,11 @@ export interface MentionSearchResult {
  * 为什么走后端而不是在前端遍历：工作区可能有几万个文件，
  * 前端拿到全量目录再筛既慢又占内存；后端走一次目录遍历就能按分数排好。
  *
+ * 不传 limit：候选条数由后端契约表决定（默认 20、上限 50），
+ * 前端想要的「最多几条」由界面上的截断逻辑管，不再向下传一个数字。
+ *
  * @param query 关键词；空串表示"刚敲下 `@`"，返回一批文件让用户先看到东西
- * @param limit 最多返回多少条（后端上限 50）
  */
-export function search_workspace_files(query: string, limit = 20): Promise<MentionSearchResult> {
-  return get<MentionSearchResult>('/file/search', { q: query, limit })
+export function search_workspace_files(query: string): Promise<MentionSearchResult> {
+  return get<MentionSearchResult>('/file/search', { q: query })
 }

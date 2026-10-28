@@ -201,14 +201,8 @@ const DOC_SUGGEST_MAX = 8
 /** `/` 命令面板最多同时显示几条命令（再多用户也看不过来） */
 const COMMAND_SUGGEST_MAX = 8
 
-/** `@` 文件候选一次最多取几条（与后端 GET /file/search 的默认 limit 一致） */
-const MENTION_MAX_RESULTS = 20
-
 /** 请求「终止」后最多再等多少毫秒就强行断开前端连接 */
 const STOP_FALLBACK_MS = 3000
-
-/** 左栏会话列表最多列多少个 */
-export const SESSION_LIST_LIMIT = 20
 
 // =========================================================================== //
 // 3. 工具函数
@@ -495,7 +489,8 @@ export const useChatStore = defineStore('chat', {
     async loadSessions(): Promise<void> {
       this.loadingSessions = true
       try {
-        this.sessions = await list_chat_sessions(SESSION_LIST_LIMIT, this.searchQuery)
+        // 条数由后端默认值决定，前端不再传 limit（见 docs/adr/0001-limit-越界一律报错.md）
+        this.sessions = await list_chat_sessions(this.searchQuery)
       } catch (error) {
         console.error('加载会话记录失败:', error)
         showToast('加载会话记录失败')
@@ -513,7 +508,7 @@ export const useChatStore = defineStore('chat', {
     async loadArchivedSessions(): Promise<void> {
       this.loadingArchived = true
       try {
-        this.archivedSessions = await list_chat_sessions(SESSION_LIST_LIMIT, this.searchQuery, true)
+        this.archivedSessions = await list_chat_sessions(this.searchQuery, true)
       } catch (error) {
         console.error('加载归档会话失败:', error)
         showToast('加载归档会话失败')
@@ -774,7 +769,8 @@ export const useChatStore = defineStore('chat', {
      */
     async searchMentions(query: string): Promise<MentionFile[]> {
       try {
-        const data = await search_workspace_files(query, MENTION_MAX_RESULTS)
+        // 候选条数交给后端契约表（默认 20、上限 50），前端不再传 limit
+        const data = await search_workspace_files(query)
         return data.items
       } catch (error) {
         console.error('搜索工作区文件失败:', error)

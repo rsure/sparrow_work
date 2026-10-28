@@ -9,6 +9,8 @@ from fastapi import APIRouter, Query
 from app.services import audit_service
 # 项目内：统一响应外壳
 from app.schemas.common import ApiResponse
+# 项目内：limit 的默认值与上限契约表（Java 侧镜像在 backend_java 的 common/PageLimits.java）
+from app.core import limits
 
 # 本模块的路由，由 app/api/router.py 挂载
 router = APIRouter(prefix="/audit", tags=["audit"])
@@ -18,7 +20,12 @@ router = APIRouter(prefix="/audit", tags=["audit"])
 async def list_audit(
     session_id: str | None = Query(default=None, description="只看某个会话的记录；不传表示全部"),
     tool: str | None = Query(default=None, description="只看某个工具，如 run_command"),
-    limit: int = Query(default=100, ge=1, le=500, description="最多返回多少条"),
+    limit: int = Query(
+        limits.DEFAULT_AUDIT,
+        ge=1,
+        le=limits.MAX_AUDIT,
+        description="最多返回多少条，默认 100、上限 500；越界报 422",
+    ),
 ) -> ApiResponse[list[dict]]:
     """返回审计记录列表，供前端「操作记录」页展示。"""
     rows = audit_service.list_logs(session_id=session_id, tool=tool, limit=limit)

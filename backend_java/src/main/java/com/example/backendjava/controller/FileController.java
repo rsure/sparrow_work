@@ -15,8 +15,16 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 // Spring Web 注解：查询参数
 import org.springframework.web.bind.annotation.RequestParam;
+// Jakarta 校验注解：limit 的下界（小于 1 直接 400）
+import jakarta.validation.constraints.Min;
+// Jakarta 校验注解：limit 的上界（超过上限直接 400）
+import jakarta.validation.constraints.Max;
+// Spring 校验开关：类上标了它，方法参数上的 @Min/@Max 才会被校验
+import org.springframework.validation.annotation.Validated;
 // 项目内统一响应外壳
 import com.example.backendjava.common.ApiResponse;
+// 项目内：limit 的默认值与上限契约表（Python 侧镜像在 app/core/limits.py）
+import com.example.backendjava.common.PageLimits;
 // 项目内 Service 获取工具
 import com.example.backendjava.util.ServiceSupport;
 // 文件业务接口：文件预览与权限校验
@@ -32,6 +40,7 @@ import java.util.Map;
 /**
  * 文件预览接口。
  */
+@Validated
 @RestController
 @RequestMapping("/file")
 public class FileController {
@@ -86,7 +95,9 @@ public class FileController {
     @GetMapping("/search")
     public ApiResponse<Map<String, Object>> search(
             @RequestParam(name = "q", defaultValue = "") String query,
-            @RequestParam(defaultValue = "20") int limit
+            @RequestParam(defaultValue = "" + PageLimits.DEFAULT_FILE_SEARCH)
+            // 候选是给人选的，超过 50 条也没人往下翻 → 越界报 400
+            @Min(1) @Max(PageLimits.MAX_FILE_SEARCH) int limit
     ) {
         return ApiResponse.ok(
                 ServiceSupport.require(fileService, "文件服务").search(query, limit)

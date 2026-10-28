@@ -5,7 +5,6 @@
 package com.example.backendjava.service.impl;
 
 // 唯一 id 工具：首轮请求未带 session_id 时生成一个 32 位十六进制会话 id
-
 import cn.hutool.core.util.IdUtil;
 import cn.hutool.core.util.StrUtil;
 import com.example.backendjava.chat.event.ChatEvents;
@@ -13,6 +12,8 @@ import com.example.backendjava.chat.event.SseAgentEventSink;
 import com.example.backendjava.chat.event.TraceEventSink;
 import com.example.backendjava.chat.runtime.*;
 import com.example.backendjava.common.ApiException;
+// 项目内：limit 的默认值与上限契约表（与 Python 侧 app/core/limits.py 一一对应）
+import com.example.backendjava.common.PageLimits;
 import com.example.backendjava.dto.ChatDtos;
 import com.example.backendjava.dto.LlmDtos;
 import com.example.backendjava.dto.LlmModelSpec;
@@ -52,9 +53,11 @@ import java.io.IOException;
 import java.io.PrintWriter;
 import java.io.StringWriter;
 import java.nio.charset.StandardCharsets;
+import java.time.Instant;
 import java.time.LocalDateTime;
 import java.util.*;
 import java.util.concurrent.ExecutorService;
+import java.util.stream.Collectors;
 
 // 字符串工具：判断前端传来的 session_id / 工具参数 JSON 是否为空白
 // Jackson 泛型类型引用：把工具参数的 JSON 文本解析成 Map<String, Object>
@@ -682,7 +685,8 @@ public class ChatServiceImpl implements ChatService {
      */
     @Override
     public ChatDtos.ChatSessionList listSessions(int limit, String query, boolean archived) {
-        int safeLimit = limit <= 0 ? 20 : Math.min(limit, 100);
+        // 上限由 controller 的 @Max 拦过，这里再夹一次是给「内部直接调用」兜底
+        int safeLimit = PageLimits.clamp(limit, PageLimits.MAX_CHAT_SESSIONS);
         List<ChatSession> rows = chatPersistence.persistedSessions(archived);
         List<ChatDtos.ChatSessionInfo> items = new ArrayList<>();
         for (ChatSession row : rows) {
@@ -712,10 +716,20 @@ public class ChatServiceImpl implements ChatService {
      */
     @Override
     public ChatDtos.ChatHistory history(String sessionId, int limit) {
-        int safeLimit = limit <= 0 ? 20 : Math.min(limit, 100);
+        // 上限由 controller 的 @Max 拦过，这里再夹一次是给「内部直接调用」兜底
+        int safeLimit = PageLimits.clamp(limit, PageLimits.MAX_CHAT_HISTORY);
+        // 多取一条：多出来的那条只用来判断「还有没有更早的」，省掉一次 COUNT 查询
+        List<ChatMessage> rows = chatPersistence.findRecentMessages(sessionId, safeLimit + 1);
+        boolean hasMore = rows.size() > safeLimit;
+        // 按升序返回，多出来的那条是最早的，正好丢掉：剩下的就是最近 safeLimit 条
+        if (hasMore) {
+            rows = rows.subList(rows.size() - safeLimit, rows.size());
+        }
 
-        //TODO
-        return  null;
+        List<ChatDtos.StoredChatMessage> messages = rows.stream()
+                .map(this::toStoredMessage).collect(Collectors.toList());
+
+        return new ChatDtos.ChatHistory(sessionId, messages, hasMore);
     }
 
     /**
@@ -816,5 +830,67 @@ public class ChatServiceImpl implements ChatService {
                 "error", Map.of("desc", "出错", "fields", List.of("message", "detail")),
                 "steer_injected", Map.of("desc", "插话已注入", "fields", List.of("session_id", "steer_id")),
                 "budget_exceeded", Map.of("desc", "预算超限", "fields", List.of("session_id", "interrupt_id", "dimension", "current", "limit", "message")));
+    }
+
+    /**
+     * 把一条落库消息还原成接口要的结构；tool_calls 是 JSON 字符串，这里解析成对象列表。
+     *
+     * <p>解析失败时按「无轨迹」处理，绝不让一条脏数据打断整个历史回放。</p>
+     *
+     * @param row 消息实体
+     * @return 接口消息结构
+     */
+    private ChatDtos.StoredChatMessage toStoredMessage(ChatMessage row) {
+        List<ChatDtos.ToolCallTrace> toolCalls = null;
+        // tool_calls 只在助手消息里有值；用户消息是 null，直接跳过解析
+        if (row.getToolCalls() != null && !row.getToolCalls().isBlank()) {
+            try {
+                toolCalls = objectMapper.readValue(row.getToolCalls(),
+                        new TypeReference<List<ChatDtos.ToolCallTrace>>() { });
+            } catch (Exception e) {
+                // 历史里若存过旧格式，解析不动就丢弃轨迹，不影响正文回放
+                toolCalls = null;
+            }
+        }
+        return new ChatDtos.StoredChatMessage(
+                row.getId() == null ? 0L : row.getId(),
+                row.getRole(),
+                row.getContent(),
+                row.getMode(),
+                toolCalls,
+                row.getFinishReason(),
+                row.getElapsed(),
+                row.getCreatedAt());
+    }
+
+    /**
+     * 把 ISO-8601 时间字符串转成 Unix 秒（浮点）。
+     *
+     * <p>SessionInfo 的 created_at / last_active 是「秒」；格式对不上时回 null，前端按「未知」展示。</p>
+     *
+     * @param iso 形如 2026-10-27T16:30:00 的字符串
+     * @return Unix 秒；无法解析时为 null
+     */
+    private Double parseEpochSeconds(String iso) {
+        if (iso == null || iso.isBlank()) {
+            return null;
+        }
+        try {
+            return Instant.parse(iso).toEpochMilli() / 1000.0;
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    /**
+     * 取会话标题，导出 Markdown 的标题行用。
+     *
+     * @param sessionId 会话 id
+     * @return 标题；会话不存在时回「会话」
+     */
+    private String sessionTitle(String sessionId) {
+        return chatSessionRepository.findById(sessionId)
+                .map(ChatSession::getTitle)
+                .orElse("会话");
     }
 }

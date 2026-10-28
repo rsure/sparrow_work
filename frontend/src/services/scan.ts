@@ -167,11 +167,13 @@ export interface DocumentInfo {
 /**
  * 对应后端 GET /rag/documents:分页查询已导入文档
  *
- * @param limit 最多返回多少条，默认 200
+ * 不传 limit：每页多少条由后端契约表决定（默认 50、上限 200），
+ * 前端只负责翻页（offset）。
+ *
  * @param offset 跳过的条数，默认 0
  */
-export function list_documents(limit = 200, offset = 0): Promise<DocumentInfo[]> {
-  return get<DocumentInfo[]>('/rag/documents', { limit, offset })
+export function list_documents(offset = 0): Promise<DocumentInfo[]> {
+  return get<DocumentInfo[]>('/rag/documents', { offset })
 }
 
 /**

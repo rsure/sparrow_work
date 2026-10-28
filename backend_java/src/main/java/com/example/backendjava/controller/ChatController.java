@@ -23,6 +23,12 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RequestBody;
 // Jakarta 校验注解：触发 DTO 上的约束校验
 import jakarta.validation.Valid;
+// Jakarta 校验注解：给查询参数 limit 声明下界（小于 1 直接 400）
+import jakarta.validation.constraints.Min;
+// Jakarta 校验注解：给查询参数 limit 声明上界（超过上限直接 400）
+import jakarta.validation.constraints.Max;
+// Spring 校验开关：类上标了它，方法参数上的 @Min/@Max 才会被校验
+import org.springframework.validation.annotation.Validated;
 // Spring MVC 的 SSE 发射器：流式接口的返回类型
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 // 项目内：Service 获取工具
@@ -31,6 +37,8 @@ import com.example.backendjava.util.ServiceSupport;
 import com.example.backendjava.service.ChatService;
 // 对话接口的请求/响应 DTO 容器
 import com.example.backendjava.dto.ChatDtos;
+// 项目内：limit 的默认值与上限契约表（Python 侧镜像在 app/core/limits.py）
+import com.example.backendjava.common.PageLimits;
 
 // 标准库：Map 用于事件协议说明
 import java.util.Map;
@@ -44,6 +52,7 @@ import java.util.Map;
  *
  * <p>例外：{@code /chat/stream} 与 {@code /chat/resume} 返回 text/event-stream（SSE）。</p>
  */
+@Validated
 @RestController
 @RequestMapping("/chat")
 public class ChatController {
@@ -134,7 +143,10 @@ public class ChatController {
      */
     @GetMapping("/sessions")
     public ChatDtos.ChatSessionList listSessions(
-            @RequestParam(defaultValue = "20") int limit,
+            // 默认值来自 PageLimits，避免和 service 里的上限各写一份
+            @RequestParam(defaultValue = "" + PageLimits.DEFAULT_CHAT_SESSIONS)
+            // 超过上限直接 400，不再悄悄截断：客户端传错了要被告知（取舍见 docs/adr/0001）
+            @Min(1) @Max(PageLimits.MAX_CHAT_SESSIONS) int limit,
             // 前端查询参数名是 q（不是 query）；显式写 name 才能正确绑定
             @RequestParam(name = "q", required = false, defaultValue = "") String query,
             @RequestParam(defaultValue = "false") boolean archived
@@ -152,7 +164,9 @@ public class ChatController {
     @GetMapping("/history/sessions/{sessionId}")
     public ChatDtos.ChatHistory history(
             @PathVariable String sessionId,
-            @RequestParam(defaultValue = "200") int limit
+            @RequestParam(defaultValue = "" + PageLimits.DEFAULT_CHAT_HISTORY)
+            // 默认值即上限（200）：再往前翻由响应里的 has_more 提示，而不是一次拉全量
+            @Min(1) @Max(PageLimits.MAX_CHAT_HISTORY) int limit
     ) {
         return ServiceSupport.require(chatService, "对话服务").history(sessionId, limit);
     }
