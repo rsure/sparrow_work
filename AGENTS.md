@@ -214,3 +214,15 @@ Java 侧同样遵守 R1~R3，另外要求：
 
 完整示例、禁止清单与 AI 提示词模板见
 [`doc/java_langchan_doc/04-AI代码生成规范.md`](./doc/java_langchan_doc/04-AI代码生成规范.md)。
+
+---
+
+## Agent skills
+
+### Issue tracker
+
+Issue 与 spec 是 `.scratch/<feature-slug>/` 下的 markdown 文件（本地 Markdown 方式，不用 GitHub Issues）。见 `docs/agents/issue-tracker.md`。
+
+### Domain docs
+
+单上下文布局：仓库根目录一个 `GLOSSARY.md`，加一份 `docs/adr/`。见 `docs/agents/domain.md`。

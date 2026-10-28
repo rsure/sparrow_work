@@ -43,3 +43,5 @@ faiss_index/
 # 本地运行时数据库（开发态聊天记录，不进仓库）
 /backend/app.db*
 /backend/_db_recovery/
+# 本地草稿区：docs/agents/issue-tracker.md 约定的需求/issue 草稿（.scratch/<feature-slug>/）
+.scratch/
