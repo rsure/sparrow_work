@@ -30,3 +30,16 @@ backend_java/*.db-wal
 # RAG çš„ FAISS ç´¢å¼•ï¼ˆå¯ä» SQLite é‡å»ºï¼‰
 faiss_index/
 /backend_java/target/
+
+# ±à¼­Æ÷/IDE Óë±¾µØ¹¤¾ßÄ¿Â¼£¨²»Èë¿â£©
+.idea/
+.workbuddy/
+*.iml
+# ÔËĞĞÆÚÉú³ÉµÄ±¾µØ SQLite Êı¾İ¿â£¨ËæÊ±¿ÉÖØ½¨£©
+/app.db
+/app.db-shm
+/app.db-wal
+
+# ±¾µØÔËĞĞÊ±Êı¾İ¿â£¨¿ª·¢Ì¬ÁÄÌì¼ÇÂ¼£¬²»½ø²Ö¿â£©
+/backend/app.db*
+/backend/_db_recovery/

@@ -2,8 +2,8 @@
   "name": "app-electron",
   "private": true,
   "version": "0.1.0",
-  "description": "Electron 桌面外壳（含打包配置）",
-  "author": "your-name",
+  "description": "Sparrow Work 的 Electron 桌面外壳（含打包配置）",
+  "author": "rsure <leadersure@qq.com>",
   "license": "MIT",
   "main": "out/main/index.js",
   "scripts": {

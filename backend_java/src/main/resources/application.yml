@@ -58,7 +58,7 @@ spring:
     show-sql: false
 app:
   # 服务名：/api/health 会返回；用 APP_APP_NAME 覆盖是为了兼容 Python 侧的变量名
-  name: ${APP_APP_NAME:vue3-electron-fastapi-java}
+  name: ${APP_APP_NAME:sparrow-work-java}
   # 版本号：仅用于展示
   version: ${APP_VERSION:0.1.0}
   # 运行环境：development / production

@@ -35,7 +35,7 @@
     <artifactId>backend-java</artifactId>
     <version>0.1.0</version>
     <name>backend-java</name>
-    <description>Vue3 + Electron 桌面应用的 Java(Spring Boot + LangChain4j + LangGraph4j) 后端</description>
+    <description>Sparrow Work 的 Java(Spring Boot + LangChain4j + LangGraph4j) 后端</description>
 
     <properties>
         <!-- 源码与字节码目标版本：必须与 LangGraph4j 的 17 对齐 -->

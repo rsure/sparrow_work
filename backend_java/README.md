@@ -75,7 +75,7 @@ curl http://127.0.0.1:8000/api/health
   "message": "ok",
   "data": {
     "status": "ok",
-    "service": "vue3-electron-fastapi-java",
+    "service": "sparrow-work-java",
     "runtime": "Java",
     "runtime_version": "17.x"
   }
@@ -154,7 +154,7 @@ backend_java/
 | --- | --- | --- |
 | `APP_HOST` | `127.0.0.1` | 监听地址 |
 | `APP_PORT` | `8000` | 监听端口，必须与 Electron 一致 |
-| `APP_APP_NAME` | `vue3-electron-fastapi-java` | `/api/health` 返回的服务名 |
+| `APP_APP_NAME` | `sparrow-work-java` | `/api/health` 返回的服务名 |
 | `APP_VERSION` | `0.1.0` | 版本号 |
 | `APP_ENV` | `development` | 运行环境 |
 | `APP_DB_PATH` | `app.db` | 业务 SQLite 文件 |

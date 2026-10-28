@@ -15,7 +15,7 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
 public class AppProperties {
 
     /** 服务名：会出现在 /api/health 响应里，用于区分当前连的是哪个后端（Java 或 Python）。 */
-    private String name = "vue3-electron-fastapi-java";
+    private String name = "sparrow-work-java";
 
     /** 服务版本号：仅用于展示与排查版本不一致，不与 pom.xml 自动同步。 */
     private String version = "0.1.0";

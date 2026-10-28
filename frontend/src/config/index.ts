@@ -4,4 +4,4 @@
 export const API_PORT = 8000
 
 /** 应用显示名称：渲染在 App.vue 顶栏品牌位上；改了它前后端无需同步 */
-export const APP_TITLE = 'Vue3 + Electron + FastAPI'
+export const APP_TITLE = 'Sparrow Work'

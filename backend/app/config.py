@@ -26,7 +26,7 @@ class Settings(BaseSettings):
 
     # 基础信息（会被 /api/health 返回）
     # 应用名，展示在 FastAPI 文档标题与前端关于页
-    app_name: str = "vue3-electron-fastapi"
+    app_name: str = "sparrow-work"
     # 服务版本号，随发布递增，前端用于展示与排查问题时对版本
     version: str = "0.1.0"
     # 运行环境标识：development=开发 / production=生产，前端据此决定是否显示调试入口

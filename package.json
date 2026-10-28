@@ -1,8 +1,8 @@
 {
-  "name": "vue3-electron-fastapi",
+  "name": "sparrow-work",
   "version": "0.1.0",
   "private": true,
-  "description": "Electron + Vue3(TS) + Python(FastAPI/uv) 多端项目外壳（JS/TS 侧统一用 pnpm）",
+  "description": "Sparrow Work —— 本地优先的桌面 AI 工作台（Electron + Vue3/TS + Java/Python 双后端，JS/TS 侧统一用 pnpm）",
   "packageManager": "pnpm@12.6.0",
   "engines": {
     "node": ">=18",

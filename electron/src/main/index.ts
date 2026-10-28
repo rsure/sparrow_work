@@ -71,7 +71,7 @@ function createWindow(): void {
     minWidth: 900, // 允许用户拖拽到的最小宽度（像素），再窄布局会挤坏
     minHeight: 640, // 允许用户拖拽到的最小高度（像素）
     show: false, // 先隐藏窗口，等 ready-to-show 再显示，避免加载期间出现白屏闪烁
-    title: 'Vue3 + Electron + FastAPI', // 窗口初始标题（页面里的 <title> 会覆盖它）
+    title: 'Sparrow Work', // 窗口初始标题（页面里的 <title> 会覆盖它）
     backgroundColor: '#0b1120', // 窗口底色：与前端深色主题一致，减少首屏白闪
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'), // 预加载脚本路径：用它向渲染进程暴露白名单 API

@@ -102,7 +102,7 @@ const router = createRouter({
 /** 每次跳转完成后，用目标路由 meta.title 同步浏览器/窗口标题，方便一眼看出当前在哪一页 */
 router.afterEach((to) => {
   const title = (to.meta.title as string | undefined) ?? ''
-  document.title = title ? `${title} | Vue3-Electron-FastAPI` : 'Vue3-Electron-FastAPI'
+  document.title = title ? `${title} | Sparrow Work` : 'Sparrow Work'
 })
 
 export default router

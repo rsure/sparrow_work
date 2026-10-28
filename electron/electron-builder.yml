@@ -2,11 +2,11 @@
 # 用法（在 electron/ 目录下）：pnpm run build
 
 # 应用唯一标识（反域名格式），系统用它区分不同应用，升级安装时不能改
-appId: com.example.vue3electronfastapi
+appId: com.rsure.sparrowwork
 # 应用显示名：出现在安装目录、快捷方式、窗口标题上
-productName: Vue3ElectronFastAPI
+productName: Sparrow Work
 # 版权信息：写入 exe 文件属性
-copyright: Copyright (c) 2025
+copyright: Copyright (c) 2026 rsure
 
 # 目录约定
 directories:
@@ -53,7 +53,7 @@ asar: true
 publish:
   - provider: generic
     # 占位地址：正式发布前改成自己的静态文件服务（末尾不要带斜杠）
-    url: https://updates.example.com/vue3-electron-fastapi
+    url: https://updates.example.com/sparrow-work
 
 # The main-process bundle only uses node: builtins, so the production-dependency
 # install step is unnecessary (and it runs an extra package-manager install that can fail).
@@ -71,7 +71,7 @@ win:
       arch:
         - x64
   # 产物文件名模板：app-1.0.0-win-x64.exe
-  artifactName: app-${version}-win-${arch}.${ext}
+  artifactName: sparrow-work-${version}-win-${arch}.${ext}
 
 # NSIS 安装程序的具体行为
 nsis:
@@ -86,10 +86,10 @@ nsis:
   # true = 在开始菜单创建快捷方式
   createStartMenuShortcut: true
   # 快捷方式显示名
-  shortcutName: Vue3ElectronFastAPI
+  shortcutName: Sparrow Work
   # Literal braces must use {{ }} here: ${ } is interpreted as electron-builder interpolation
   # 控制面板「卸载程序」里显示的名称，{{version}} 会被替换成真实版本号
-  uninstallDisplayName: Vue3ElectronFastAPI {{version}}
+  uninstallDisplayName: Sparrow Work {{version}}
 
 # macOS 平台配置
 mac:
@@ -104,7 +104,7 @@ mac:
   category: public.app-category.developer-tools
   # null = 不做代码签名（本地学习用；正式发布须改为开发者证书）
   identity: null
-  artifactName: app-${version}-mac-${arch}.${ext}
+  artifactName: sparrow-work-${version}-mac-${arch}.${ext}
 
 # Linux 平台配置
 linux:
@@ -118,5 +118,5 @@ linux:
         - x64
   category: Development
   # 维护者信息（deb 包必填），发布前请改成自己的邮箱
-  maintainer: your-name <your-name@example.com>
-  artifactName: app-${version}-linux-${arch}.${ext}
+  maintainer: rsure <leadersure@qq.com>
+  artifactName: sparrow-work-${version}-linux-${arch}.${ext}
