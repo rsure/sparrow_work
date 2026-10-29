@@ -46,8 +46,9 @@ public class AgentEventConfig {
     /**
      * 对话轮次执行线程池。
      *
-     * <p>为什么必须要有：{@code TokenStream.start()} 是阻塞调用，会把 Tomcat 线程占满一整轮；
-     * 更关键的是「等用户确认」也会阻塞，绝不能占用 Web 线程。</p>
+     * <p>为什么必须要有：{@code TokenStream.start()} 在 langchain4j 1.22 里只是「把请求发出去」，
+     * 但整轮真正的耗时（模型流式回包 + 多轮工具调用）必须有人等——见
+     * {@code StreamingTurn.await}；更关键的是「等用户确认」也会阻塞，绝不能占用 Web 线程。</p>
      *
      * @return 线程池
      */

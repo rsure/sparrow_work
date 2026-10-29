@@ -53,9 +53,15 @@ import java.io.IOException;
 import java.io.PrintWriter;
 import java.io.StringWriter;
 import java.nio.charset.StandardCharsets;
+// 标准库：Duration 表达「最多等模型多久才收尾」，比裸数字更好读
+import java.time.Duration;
+// 标准库：Instant 记录消息/会话的创建时间（库里存 ISO 文本）
 import java.time.Instant;
+// 标准库：LocalDateTime 拼「今天」这类按天统计的边界
 import java.time.LocalDateTime;
+// 标准库：集合、Map、UUID 等日常容器（本文件里用于事件载荷、工具表、会话 id）
 import java.util.*;
+// 标准库：线程池接口，对话轮次与记忆抽取各用一个
 import java.util.concurrent.ExecutorService;
 import java.util.stream.Collectors;
 // 记忆服务：新对话注入工作区记忆 + 每轮结束异步抽取
@@ -232,6 +238,22 @@ public class ChatServiceImpl implements ChatService {
 
     /** 模型窗口未知时的兜底值（token）；宁可早压缩，也不要等供应商报 context length 错误。 */
     private static final int DEFAULT_CONTEXT_WINDOW = 32_768;
+
+    /**
+     * SSE 连接的最长存活时间（毫秒）。
+     *
+     * <p>Spring 到这个点还没收尾就会自己关流，前端表现为连接断开，所以「等模型」的上限
+     * 必须比它小（见 {@link #TURN_TIMEOUT_SECONDS}）。普通对话与 `\doc` 命令共用这个值。</p>
+     */
+    private static final long SSE_TIMEOUT_MS = 300_000L;
+
+    /**
+     * 收尾预留时间（毫秒）。
+     *
+     * <p>为什么要有：等模型的上限必须比 {@link #SSE_TIMEOUT_MS} 小一点，
+     * 好让落库、发 done、关流这些收尾动作在 Spring 判超时关连接之前做完。</p>
+     */
+    private static final long TURN_WRAP_UP_MS = 20_000L;
 
     /** 送去摘要的原文最大字符数；超出部分直接省略，避免「为了压缩反而先超窗」。 */
     private static final int MAX_SUMMARY_INPUT_CHARS = 8_000;
@@ -605,7 +627,7 @@ public class ChatServiceImpl implements ChatService {
                 : normalized.sessionId();
 
         // 3) 建流并立刻绑定到总线：之后所有事件都往这条流写
-        SseEmitter emitter = new SseEmitter(300_000L);
+        SseEmitter emitter = new SseEmitter(SSE_TIMEOUT_MS);
         SseAgentEventSink sink = new SseAgentEventSink(emitter);
         sessionBus.bind(sessionId, sink);
 
@@ -688,28 +710,70 @@ public class ChatServiceImpl implements ChatService {
             // 7) 开本轮预算：工具边界会读它判断是否越线
             toolBudgetRegistry.startBudget(sessionId);
 
-            // 8) 跑起来。start() 是阻塞的，直到整轮结束（含所有工具调用）
-            assistant.chat(request.message())
-                    .onPartialResponse(partial -> {
+            // 8) 跑起来：start() 只负责「把请求发出去」，不阻塞等答案。
+            //    langchain4j 1.22 实测：start() 约 0.5 秒返回，第一个 token 要 1.7 秒后才到，
+            //    回调跑在别的线程上（ForkJoinPool.commonPool / HTTP 客户端线程），所以下面必须 await。
+            StreamingTurn turn = StreamingTurn.start(
+                    assistant.chat(request.message()),
+                    partial -> {
                         // 用户点了停止：不再转发增量，但模型那边没法取消，让它自己跑完
                         if (recorder.isStopped()) {
                             return;
                         }
                         recorder.appendAnswer(partial);
                         sessionBus.emit(sessionId, chatEvents.token(partial));
-                    })
-                    .onCompleteResponse(response -> recordUsage(sessionId, recorder, response))
-                    .onError(error -> sessionBus.emit(sessionId,
-                            chatEvents.error("模型调用失败：" + error.getMessage(),
-                                    request.debug() ? stackOf(error) : null)))
-                    .start();
+                    },
+                    response -> recordUsage(sessionId, recorder, response),
+                    error -> sessionBus.emit(sessionId, chatEvents.error(
+                            "模型调用失败：" + error.getMessage(),
+                            request.debug() ? stackOf(error) : null)));
 
+            // 9) 等整轮真的结束（含所有工具调用）再往下走。
+            //    不能省：start() 一返回就走的话，答案还是空串，
+            //    finishTurn 会「按空答案落库（等于不落）+ 提前发 done + 立刻关流」，
+            //    模型随后吐出的内容全部写进已关闭的 SSE 流，前端只能看到 answer=""。
+            //
+            //    预算要用「本轮开始时刻」算：前面的补种上下文、建模型可能已经花掉几秒，
+            //    扣掉之后剩下的时间与 SSE 的存活时间对齐，收尾才来得及。
+            long deadline = startedAt + SSE_TIMEOUT_MS - TURN_WRAP_UP_MS;
+            boolean finished = false;
+            while (true) {
+                long now = System.currentTimeMillis();
+                long remaining = deadline - now;
+                if (remaining <= 0L) {
+                    // 等确认的窗口（10 分钟）比 SSE 长：此刻若正等用户点确认，
+                    // 现在收尾会让这次确认彻底作废（/chat/resume 找不到待确认的轮次），
+                    // 所以重新给一个完整窗口，等确认结果回来再算。
+                    if (sessionBus.hasPending(sessionId)) {
+                        deadline = now + SSE_TIMEOUT_MS - TURN_WRAP_UP_MS;
+                        continue;
+                    }
+                    break;
+                }
+                if (turn.await(Duration.ofMillis(remaining))) {
+                    finished = true;
+                    break;
+                }
+            }
+            if (!finished) {
+                sessionBus.emit(sessionId, chatEvents.error(
+                        "模型响应超时：" + SSE_TIMEOUT_MS / 1000 + " 秒内没有返回完整结果",
+                        request.debug() ? "等待 onCompleteResponse / onError 超时" : null));
+            }
+
+        } catch (InterruptedException ex) {
+            // 现在没有代码主动中断对话线程（线程池关闭用的是 shutdown()），这里是兜底：
+            // 万一将来改成会中断的关闭方式，也别让前端一直转圈。
+            // 恢复中断标记，让上层调用链知道该收手了。
+            Thread.currentThread().interrupt();
+            sessionBus.emit(sessionId, chatEvents.error(
+                    "本轮对话被中断：" + ex.getMessage(), request.debug() ? stackOf(ex) : null));
         } catch (RuntimeException ex) {
             // 任何未预料异常都要变成 error 事件，否则前端只能干等到超时
             sessionBus.emit(sessionId, chatEvents.error(
                     "本轮对话失败：" + ex.getMessage(), request.debug() ? stackOf(ex) : null));
         } finally {
-            // 9) 落助手消息 + 发 done + 关流。无论成功失败都要走到这里
+            // 10) 落助手消息 + 发 done + 关流。无论成功失败都要走到这里
             finishTurn(sessionId, request, recorder, turnId);
         }
     }
@@ -994,7 +1058,7 @@ public class ChatServiceImpl implements ChatService {
      */
     @Override
     public SseEmitter resume(ChatDtos.ChatResumeRequest request) {
-        SseEmitter emitter = new SseEmitter(300_000L);
+        SseEmitter emitter = new SseEmitter(SSE_TIMEOUT_MS);
         SseAgentEventSink sink = new SseAgentEventSink(emitter);
 
         // 1) 先绑新流：必须赶在线程醒来之前，否则线程醒来那一瞬间的输出会丢
