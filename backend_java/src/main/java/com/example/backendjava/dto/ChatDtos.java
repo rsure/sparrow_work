@@ -30,17 +30,39 @@ public final class ChatDtos {
     }
 
     // ======================================================================= //
+    // 0. 请求体的默认值
+    //
+    // 为什么集中写在这里：前端（frontend/src/services/chat.ts）在非 doc 模式下
+    // 根本不传 doc_top_k / max_iterations，后端必须有一处「不传时用哪个值」的权威来源。
+    // 这两个数字与 Python 侧 backend/app/controllers/chat_controller.py 的
+    // ChatRequest 字段默认值逐项对应，改一处必须同步另一处。
+    // ======================================================================= //
+
+    /** mode=doc 的检索问答默认取几个片段：前端不传 doc_top_k 时用它兜底（范围 1~20，与 Python 默认 5 一致）。 */
+    static final int DEFAULT_DOC_TOP_K = 5;
+
+    /** 单轮递归步数上限的默认值：前端不传 max_iterations 时用它兜底（范围 1~50，与 Python 默认 25 一致）。 */
+    static final int DEFAULT_MAX_ITERATIONS = 25;
+
+    // ======================================================================= //
     // 1. 请求体
     // ======================================================================= //
 
     /**
      * 发起一次对话的请求体，对应 POST /chat/stream。
      *
+     * <p><b>为什么 docTopK / maxIterations 是 Integer 而不是 int：</b>
+     * 前端只有文档模式才会带上这两个字段，普通对话根本不传。用基本类型 int 时，
+     * Jackson 会把「没传」填成 0，而 0 又会被 {@code @Min(1)} 判成越界——
+     * 于是请求在校验阶段就被 400 掉，{@link #withDefaults()} 里的默认值永远来不及生效。
+     * 换成包装类型 Integer 后，「没传」是 null（{@code @Min/@Max} 对 null 放行），
+     * 「传了 0」仍然是 0 并照旧报 400，两种意图终于能区分开。</p>
+     *
      * @param message       用户输入文本；不能为空
      * @param sessionId     会话 id；为空时由服务端生成，并随 done 事件返回
      * @param mode          对话模式：agent=工具 Agent；doc=`\doc` 知识库指令
-     * @param docTopK       仅 mode=doc 的检索问答生效：返回片段数上限（1~20）
-     * @param maxIterations LangGraph 递归步数上限（1~50）
+     * @param docTopK       仅 mode=doc 的检索问答生效：返回片段数上限（1~20）；null=没传，取默认 5
+     * @param maxIterations LangGraph 递归步数上限（1~50）；null=没传，取默认 25
      * @param debug         是否把 Agent 事件写进服务端日志
      */
     public record ChatRequest(
@@ -51,16 +73,16 @@ public final class ChatDtos {
             @JsonProperty("session_id") String sessionId,
             // 对话模式；缺省 agent
             String mode,
-            // 检索片段数；缺省 5
+            // 检索片段数；null=前端没传（默认 5），显式越界仍报错
             @JsonProperty("doc_top_k")
             @Min(value = 1, message = "doc_top_k 最小为 1")
             @Max(value = 20, message = "doc_top_k 最大为 20")
-            int docTopK,
-            // 递归步数上限；缺省 25
+            Integer docTopK,
+            // 递归步数上限；null=前端没传（默认 25），显式越界仍报错
             @JsonProperty("max_iterations")
             @Min(value = 1, message = "max_iterations 最小为 1")
             @Max(value = 50, message = "max_iterations 最大为 50")
-            int maxIterations,
+            Integer maxIterations,
             // 调试开关；默认 false
             boolean debug
     ) {
@@ -68,18 +90,21 @@ public final class ChatDtos {
         /**
          * 补齐前端省略字段的默认值。
          *
-         * <p>Java record 没有“字段默认值”，Jackson 缺省时会填 null/0；
+         * <p>Java record 没有“字段默认值”，Jackson 对缺省字段填 null；
          * 这里统一归一化，避免业务层到处判断。</p>
          *
-         * @return 补齐 mode / docTopK / maxIterations 后的新请求对象
+         * <p>判断条件是 {@code == null} 而不是 {@code <= 0}：显式传 0 已经被
+         * {@code @Min(1)} 拦在入口（400，见 docs/adr/0001），不能在这里再悄悄改成默认值。</p>
+         *
+         * @return 补齐 mode / docTopK / maxIterations 后的新请求对象（三个字段都非 null）
          */
         public ChatRequest withDefaults() {
             // mode 为空时按 agent 处理，与 Python 侧默认值一致
             String safeMode = (mode == null || mode.isBlank()) ? "agent" : mode;
-            // docTopK 为 0 说明前端没传；合法范围是 1~20
-            int safeDocTopK = docTopK <= 0 ? 5 : docTopK;
-            // maxIterations 为 0 说明前端没传；默认 25
-            int safeMaxIterations = maxIterations <= 0 ? 25 : maxIterations;
+            // docTopK 为 null 说明前端没传；合法范围是 1~20
+            int safeDocTopK = docTopK == null ? DEFAULT_DOC_TOP_K : docTopK;
+            // maxIterations 为 null 说明前端没传；合法范围是 1~50
+            int safeMaxIterations = maxIterations == null ? DEFAULT_MAX_ITERATIONS : maxIterations;
             return new ChatRequest(message, sessionId, safeMode, safeDocTopK, safeMaxIterations, debug);
         }
     }
@@ -91,7 +116,8 @@ public final class ChatDtos {
      * @param interruptId   中断 id，用来确认恢复的是哪一处
      * @param approved      true=同意执行；false=拒绝
      * @param remember      是否记住本工作区授权
-     * @param maxIterations 恢复执行的递归步数上限
+     * @param maxIterations 恢复执行的递归步数上限；null=没传，取默认 25
+     * @see ChatRequest#withDefaults() 为什么这里的步数上限也要用包装类型 Integer
      */
     public record ChatResumeRequest(
             // 会话 id；取自 confirm_required 事件
@@ -104,16 +130,16 @@ public final class ChatDtos {
             boolean approved,
             // 是否记住授权
             boolean remember,
-            // 恢复执行的步数上限；缺省 25
+            // 恢复执行的步数上限；null=前端没传（默认 25），显式越界仍报错
             @JsonProperty("max_iterations")
             @Min(value = 1, message = "max_iterations 最小为 1")
             @Max(value = 50, message = "max_iterations 最大为 50")
-            int maxIterations
+            Integer maxIterations
     ) {
         /**
          * 补齐 maxIterations 的默认值。
          *
-         * @return 归一化后的新请求对象
+         * @return 归一化后的新请求对象（maxIterations 非 null）
          */
         public ChatResumeRequest withDefaults() {
             return new ChatResumeRequest(
@@ -121,7 +147,7 @@ public final class ChatDtos {
                     interruptId,
                     approved,
                     remember,
-                    maxIterations <= 0 ? 25 : maxIterations
+                    maxIterations == null ? DEFAULT_MAX_ITERATIONS : maxIterations
             );
         }
     }

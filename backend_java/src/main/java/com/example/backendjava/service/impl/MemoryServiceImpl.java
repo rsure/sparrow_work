@@ -532,8 +532,12 @@ public class MemoryServiceImpl implements MemoryService {
     @Override
     public Map<String, Object> create(MemoryDtos.MemoryCreateRequest request) {
         String wid = resolveWorkspace(request.workspaceId());
+        // importance 是包装类型：null（前端没传）按 3 处理，避免拆箱 NPE；
+        // 显式越界已经在入口被 @Min/@Max 拦成 400，这里只兜「没传」这一种情况
+        Integer requestedImportance = request.importance();
+        int importance = requestedImportance == null ? 3 : requestedImportance;
         Map<String, Object> memory = addMemory(
-                wid, request.content(), request.category(), request.importance(), "manual", null);
+                wid, request.content(), request.category(), importance, "manual", null);
         Map<String, Object> result = new LinkedHashMap<>();
         result.put("saved", memory != null);
         result.put("memory", memory);

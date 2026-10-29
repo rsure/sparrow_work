@@ -43,9 +43,14 @@ public final class MemoryDtos {
     /**
      * 手动新增记忆请求。
      *
+     * <p><b>为什么 importance 是 Integer 而不是 int：</b>不传这个字段时 int 会被 Jackson 填成 0，
+     * 0 又被 {@code @Min(1)} 判成越界，请求在进 controller 之前就 400 了，默认值根本没机会生效。
+     * 用 Integer 时「没传」是 null（{@code @Min/@Max} 对 null 放行），
+     * 「传了 0」仍然是 0 并照旧报 400（取舍见 docs/adr/0001）。</p>
+     *
      * @param content     记忆正文（一句话）
      * @param category    分类：preference / decision / fact / todo
-     * @param importance  重要度 1~5
+     * @param importance  重要度 1~5；null=没传，取默认 3
      * @param workspaceId 工作区 id；null 表示当前 active
      */
     public record MemoryCreateRequest(
@@ -54,21 +59,24 @@ public final class MemoryDtos {
             String content,
             // 分类
             String category,
-            // 重要度
+            // 重要度；null=没传（默认 3），显式越界仍报错
             @Min(value = 1, message = "importance 最小为 1")
             @Max(value = 5, message = "importance 最大为 5")
-            int importance,
+            Integer importance,
             // 工作区 id
             @JsonProperty("workspace_id") String workspaceId
     ) {
         /**
          * 补齐默认值。
          *
-         * @return category 默认 fact、importance 默认 3 的新请求对象
+         * <p>判断条件是 {@code == null} 而不是 {@code <= 0}：显式传 0 已经被
+         * {@code @Min(1)} 拦在入口（400），不能在这里再悄悄改成默认值。</p>
+         *
+         * @return category 默认 fact、importance 非 null 的新请求对象（默认 3）
          */
         public MemoryCreateRequest withDefaults() {
             String safeCategory = (category == null || category.isBlank()) ? "fact" : category;
-            int safeImportance = importance <= 0 ? 3 : importance;
+            int safeImportance = importance == null ? 3 : importance;
             return new MemoryCreateRequest(content, safeCategory, safeImportance, workspaceId);
         }
     }

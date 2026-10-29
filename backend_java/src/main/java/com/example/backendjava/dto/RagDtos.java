@@ -68,8 +68,14 @@ public final class RagDtos {
     /**
      * 向量检索请求体。
      *
+     * <p><b>为什么 topK 是 Integer 而不是 int：</b>与对话域的 doc_top_k 同一个坑——
+     * 不传这个字段时 int 会被 Jackson 填成 0，0 又被 {@code @Min(1)} 判成越界，
+     * 请求在进 controller 之前就 400 了，默认值根本没机会生效。
+     * 用 Integer 时「没传」是 null（{@code @Min/@Max} 对 null 放行），
+     * 「传了 0」仍然是 0 并照旧报 400（取舍见 docs/adr/0001）。</p>
+     *
      * @param query          检索问题原文
-     * @param topK           返回条数上限（1~100）
+     * @param topK           返回条数上限（1~100）；null=没传，取默认 10
      * @param scoreThreshold 相似度下限；null 表示不设阈值
      * @param docIds         限定检索的文档 id 列表；null 表示不限
      * @param sources        限定检索的来源列表；null 表示不限
@@ -78,11 +84,11 @@ public final class RagDtos {
             // 检索问题
             @NotBlank(message = "query 不能为空")
             String query,
-            // 返回条数
+            // 返回条数；null=没传（默认 10），显式越界仍报错
             @JsonProperty("top_k")
             @Min(value = 1, message = "top_k 最小为 1")
             @Max(value = 100, message = "top_k 最大为 100")
-            int topK,
+            Integer topK,
             // 相似度下限
             @JsonProperty("score_threshold") Double scoreThreshold,
             // 限定文档 id
@@ -93,12 +99,15 @@ public final class RagDtos {
         /**
          * 补齐 topK 默认值。
          *
-         * @return topK 至少为 10 的新请求对象
+         * <p>判断条件是 {@code == null} 而不是 {@code <= 0}：显式传 0 已经被
+         * {@code @Min(1)} 拦在入口（400），不能在这里再悄悄改成默认值。</p>
+         *
+         * @return topK 非 null 的新请求对象（默认 10，与 Python 侧 rag_store_controller 的 10 一致）
          */
         public SearchRequest withDefaults() {
             return new SearchRequest(
                     query,
-                    topK <= 0 ? 10 : topK,
+                    topK == null ? 10 : topK,
                     scoreThreshold,
                     docIds,
                     sources

@@ -19,10 +19,16 @@ import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.transaction.annotation.Transactional;
 // 静态导入：GET 请求构造器
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+// 静态导入：POST 请求构造器（校验对话请求体用）
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 // 静态导入：HTTP 状态码断言
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 // 静态导入：JSON 字段断言
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
+// 静态导入：文本包含断言，用来确认报错文案指向具体字段
+import static org.hamcrest.Matchers.containsString;
+// 媒体类型常量：请求体是 JSON
+import org.springframework.http.MediaType;
 
 /**
  * limit 契约集成测试。
@@ -120,5 +126,40 @@ class ChatLimitContractTest {
         mockMvc.perform(get("/api/chat/sessions").contextPath("/api"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.sessions").isArray());
+    }
+
+    /**
+     * 对话请求体：显式传 doc_top_k=0 必须 400，而不是被当成「没传」。
+     *
+     * <p>这条和下面的 max_iterations 一起钉住「省略=取默认值、显式越界=报错」的边界：
+     * 前端普通对话（非 doc 模式）不传这两个字段，必须放行；
+     * 一旦真的传了 0，说明调用方算错了，要让它看见错误（见 docs/adr/0001）。</p>
+     *
+     * @throws Exception MockMvc 执行失败时抛出
+     */
+    @Test
+    void streamShouldRejectZeroDocTopK() throws Exception {
+        // 校验在进 controller 之前就失败，所以不会真的启动一轮对话
+        mockMvc.perform(post("/api/chat/stream").contextPath("/api")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"message\":\"你好\",\"doc_top_k\":0}"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value(400))
+                .andExpect(jsonPath("$.message", containsString("doc_top_k 最小为 1")));
+    }
+
+    /**
+     * 对话请求体：max_iterations 超过上限（50）必须 400。
+     *
+     * @throws Exception MockMvc 执行失败时抛出
+     */
+    @Test
+    void streamShouldRejectTooLargeMaxIterations() throws Exception {
+        mockMvc.perform(post("/api/chat/stream").contextPath("/api")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"message\":\"你好\",\"max_iterations\":51}"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value(400))
+                .andExpect(jsonPath("$.message", containsString("max_iterations 最大为 50")));
     }
 }

@@ -672,7 +672,11 @@ public class RagServiceImpl implements RagService {
         }
         ensureIndexLoaded();
 
-        int topK = request.topK() <= 0 ? 10 : request.topK();
+        // topK 是包装类型：null 表示调用方没传，取默认 10；
+        // HTTP 入口已经由 @Min/@Max + withDefaults() 处理过，这里兜底的对象是
+        // 工具（rag_search）等非 HTTP 调用方——它们可能传 0 或负数，不能让非法值进检索
+        Integer requestedTopK = request.topK();
+        int topK = (requestedTopK == null || requestedTopK <= 0) ? 10 : requestedTopK;
         List<ScoredChunk> scored = new ArrayList<>();
         synchronized (indexLock) {
             if (store.size() == 0) {
