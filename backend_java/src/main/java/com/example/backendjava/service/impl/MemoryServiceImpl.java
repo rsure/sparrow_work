@@ -1030,10 +1030,11 @@ public class MemoryServiceImpl implements MemoryService {
                     + "请到设置页的「模型」分区填写（对应设置项：" + provider.secretKey() + "）");
         }
 
+        // 接口地址：自定义端点用自己的地址，内置供应商保持「全局配置优先」
         String configuredBaseUrl = String.valueOf(settingsRegistry.getSetting("llm.base_url"));
-        String baseUrl = configuredBaseUrl == null || configuredBaseUrl.isBlank()
+        String baseUrl = provider.isCustom()
                 ? provider.baseUrl()
-                : configuredBaseUrl.trim();
+                : (configuredBaseUrl.isBlank() ? provider.baseUrl() : configuredBaseUrl.trim());
 
         double temperature = ((Number) settingsRegistry.getSetting("llm.temperature")).doubleValue();
         int configuredMaxTokens = ((Number) settingsRegistry.getSetting("llm.max_tokens")).intValue();
