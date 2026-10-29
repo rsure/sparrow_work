@@ -37,7 +37,6 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import dev.langchain4j.agent.tool.ToolExecutionRequest;
 import dev.langchain4j.agent.tool.ToolSpecification;
 import dev.langchain4j.model.chat.StreamingChatModel;
-import dev.langchain4j.model.chat.request.json.JsonObjectSchema;
 import dev.langchain4j.model.output.TokenUsage;
 import dev.langchain4j.service.AiServices;
 import dev.langchain4j.service.tool.ToolExecutor;
@@ -562,13 +561,6 @@ public class ChatServiceImpl implements ChatService {
     /** 系统提示词：启动时一次性读入，之后每轮对话复用；修改模板后需重启服务才会生效。 系统提示词不应该暴露给用户随意修改*/
     private String systemPrompt;
 
-
-    /** 工具参数 schema：开放对象，允许模型按工具说明自行组织字段。 */
-    private static final JsonObjectSchema OPEN_PARAMETERS = JsonObjectSchema.builder()
-            // AgentTool 目前没有字段级参数声明，先允许任意字段，避免把模型的合法参数全部拒掉
-            .additionalProperties(true)
-            .build();
-
     /**
      * 启动时加载系统提示词。
      *
@@ -856,7 +848,7 @@ public class ChatServiceImpl implements ChatService {
             ToolSpecification spec = ToolSpecification.builder()
                     .name(tool.name())
                     .description(tool.description())
-                    .parameters(OPEN_PARAMETERS)
+                    .parameters(ToolSchemaMapper.toJsonSchema(tool.parameters()))
                     .build();
             // 包一层：执行前后发事件，并累积轨迹
             ToolExecutor executor = new ChatToolExecutor(

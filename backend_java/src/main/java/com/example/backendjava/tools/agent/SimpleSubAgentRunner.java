@@ -29,6 +29,8 @@ import com.example.backendjava.settings.SettingsRegistry;
 import com.example.backendjava.tools.PathPolicy;
 // 项目内：会话级权限上下文
 import com.example.backendjava.tools.SessionContext;
+// 项目内：把工具声明的参数字段翻译成模型库的 JSON Schema（主对话与子 Agent 共用一份逻辑）
+import com.example.backendjava.tools.ToolSchemaMapper;
 // 项目内：线程本地的会话上下文
 import com.example.backendjava.tools.ToolSession;
 // 项目内：JSON 工具（解析工具参数）
@@ -46,8 +48,6 @@ import dev.langchain4j.agent.tool.ToolExecutionRequest;
 import dev.langchain4j.agent.tool.ToolSpecification;
 // LangChain4j：同步聊天模型
 import dev.langchain4j.model.chat.ChatModel;
-// LangChain4j：工具参数 JSON Schema
-import dev.langchain4j.model.chat.request.json.JsonObjectSchema;
 // LangChain4j：助手工厂（把模型 + 工具 + 系统提示词组装成代理）
 import dev.langchain4j.service.AiServices;
 // LangChain4j：工具执行器（框架回调它，本项目再转给 AgentTool）
@@ -91,12 +91,6 @@ public class SimpleSubAgentRunner implements SubAgentRunner {
             结论要求：先给 1~3 句直接回答，再列关键证据（文件路径 + 行号或片段）。
             不要输出寒暄，不要罗列你调用了哪些工具。
             """;
-
-    /** 工具参数 schema：与主对话一致，允许模型按工具说明自行组织字段。 */
-    private static final JsonObjectSchema OPEN_PARAMETERS = JsonObjectSchema.builder()
-            // AgentTool 目前没有字段级参数声明，先允许任意字段，避免把模型的合法参数全部拒掉
-            .additionalProperties(true)
-            .build();
 
     /** 工具注册表：只读工具清单的来源。 */
     private final ToolRegistry toolRegistry;
@@ -216,7 +210,8 @@ public class SimpleSubAgentRunner implements SubAgentRunner {
             ToolSpecification specification = ToolSpecification.builder()
                     .name(tool.name())
                     .description(tool.description())
-                    .parameters(OPEN_PARAMETERS)
+                    // 参数 schema 由工具自己声明：模型才知道该传哪些字段，而不是靠猜参数名
+                    .parameters(ToolSchemaMapper.toJsonSchema(tool.parameters()))
                     .build();
             // 工具执行可能发生在模型 SDK 的回调线程：执行器里重新设置一次上下文，别依赖 run() 的 ThreadLocal
             tools.put(specification, (request, memoryId) -> executeTool(tool, request, subSessionId));

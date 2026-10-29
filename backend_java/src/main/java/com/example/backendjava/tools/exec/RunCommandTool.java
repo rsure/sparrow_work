@@ -41,6 +41,8 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.CompletableFuture;
 // 第三方（Spring）：声明为受管组件
 import org.springframework.stereotype.Component;
+// 项目内：参数声明的领域类型（字段名 / 类型 / 说明 / 是否必填），模型据此知道该传哪些键
+import com.example.backendjava.service.ToolParameter;
 // 项目内：工具执行结果
 import com.example.backendjava.dto.ToolResult;
 
@@ -62,8 +64,13 @@ public class RunCommandTool extends AbstractGuardedTool {
     /**
      * 命令允许列表：{可执行文件名(小写, 不带路径) : 允许的子命令集合}。
      *
-     * <p>空集合表示「这个程序任何参数都放行」（仅用于本身无破坏性的程序，如 echo）。
+     * <p>空集合表示「这个程序任何参数都放行」，只给本身无破坏性、且参数必须由模型自由决定的
+     * 程序用（如 where 后面要跟要查的文件名）。
      * 集合里的元素是该程序的第一个参数；不在集合里 → 拒绝。</p>
+     *
+     * <p>登记之前先确认它**真的是一个可执行文件**：进程由 ProcessBuilder 直接启动、
+     * 刻意不经过 shell，所以 cmd / PowerShell 的内建命令（echo、dir 这类）根本没有对应的 exe，
+     * 放行它们只会让模型拿到「找不到可执行文件」，白白浪费一轮。</p>
      */
     private static final Map<String, Set<String>> COMMAND_RULES = Map.of(
             // 只读的版本控制查询：允许看，不允许 commit / push / reset / clean
@@ -72,11 +79,10 @@ public class RunCommandTool extends AbstractGuardedTool {
             // 类型检查与测试：本项目的自检命令
             "pnpm", Set.of("typecheck", "test:backend", "run", "exec", "-v", "--version"),
             "npm", Set.of("run", "-v", "--version"),
-            // Python 侧：只允许 pytest 与「通过 -m 运行模块」，不允许 -c 直接执行代码
+            // Python 侧：只允许「通过 uv run 运行项目内的命令行」与同步依赖，不允许 -c 直接执行代码。
+            // 注意：pytest 通常没装成全局命令，跑测试请用 uv run pytest，不要单独登记 pytest
             "uv", Set.of("run", "sync", "--version", "pip"),
-            "pytest", Set.of(),
             // 纯信息类：无副作用
-            "echo", Set.of(),
             "where", Set.of(),
             "node", Set.of("-v", "--version")
     );
@@ -88,6 +94,30 @@ public class RunCommandTool extends AbstractGuardedTool {
             "-delete", "-exec",                       // find 的删除与执行
             "/c", "/k", "cmd", "powershell", "pwsh",  // 借壳绕过
             "sh", "bash"                              // 同上（非 Windows）
+    );
+
+    /**
+     * 参数声明单例：模型看到的字段清单，字段名必须与 {@code buildAction} 里读取的键名
+     * （command / command_args / cwd / timeout / purpose）逐字一致。只在类加载时构建一次。
+     *
+     * <p>为什么三个字段是必填：允许列表里每个程序都至少要带一个参数（子命令、{@code --version}、
+     * 要查的文件名），漏掉 command_args 时工具只能报错重来。把它标成必填，模型第一轮就会带上；
+     * 万一还是漏了，{@link #checkCommand} 的报错也会点名这个参数。</p>
+     */
+    private static final List<ToolParameter> PARAMETERS = List.of(
+            // 允许列表要写进字段说明：模型看得到，就不会去试 powershell / node xxx.js
+            new ToolParameter("command", ToolParameter.Kind.STRING,
+                    "可执行文件名，必须在允许列表内：git / pnpm / npm / uv / where / node", true),
+            new ToolParameter("command_args", ToolParameter.Kind.STRING_ARRAY,
+                    "命令参数数组，一个参数一个元素，不要拼成一整串。"
+                            + "第一个元素是子命令，例如 [\"run\", \"test:backend\"]、[\"--version\"]、"
+                            + "[\"status\", \"--short\"]", true),
+            new ToolParameter("cwd", ToolParameter.Kind.STRING,
+                    "工作目录的绝对路径（不接受相对路径），必须位于允许的工作区内", true),
+            new ToolParameter("timeout", ToolParameter.Kind.INTEGER,
+                    "超时秒数，默认 60，最大 300", false),
+            new ToolParameter("purpose", ToolParameter.Kind.STRING,
+                    "一句话说明这条命令要做什么，会显示在用户确认弹窗里", false)
     );
 
     /**
@@ -105,13 +135,31 @@ public class RunCommandTool extends AbstractGuardedTool {
         return "run_command";
     }
 
+    /**
+     * 参数声明：覆盖接口默认的「不声明」，返回本工具真正读取的五个字段。
+     *
+     * <p>这份声明是「工具契约」的一部分：模型看到的调用格式由它生成。字段名与
+     * {@link ToolArgs} 读取时用的键名不一致，模型传对了也会被当成「没传」——
+     * 线上就是在这里丢的参数名，所以改动时两边要一起看。</p>
+     *
+     * @return 参数字段列表（不可变，可安全复用）
+     */
+    @Override
+    public List<ToolParameter> parameters() {
+        return PARAMETERS;
+    }
+
     /** 返回工具说明。 */
     @Override
     public String description() {
         return "在本机执行一条已获授权的命令，并返回退出码与输出（用于跑测试、跑类型检查、跑脚本）。"
+                + "参数：command（可执行文件名）、command_args（字符串数组，一个参数一个元素，第一个是子命令）、"
+                + "cwd（工作目录绝对路径）、timeout（可选，秒）、purpose（可选，一句话目的）。"
+                + "示例：command=pnpm, command_args=[\"run\", \"test:backend\"], cwd=D:\\\\path\\\\to\\\\repo。"
                 + "适用：帮我跑一下测试、看看类型检查有没有过、跑个脚本统计一下。"
                 + "不适用：需要交互输入的命令、长时间运行的服务、需要联网下载的命令。"
-                + "命令必须来自允许列表（git/pnpm/npm/uv/pytest/echo/where/node）；"
+                + "命令必须来自允许列表（git/pnpm/npm/uv/where/node），且只放行其中点名的那几个子命令；"
+                + "注意 pnpm run / uv run 会执行仓库里的脚本，所以每次调用仍会弹确认框。"
                 + "执行前系统会请用户确认，用户拒绝则返回 FAIL。";
     }
 
@@ -243,14 +291,18 @@ public class RunCommandTool extends AbstractGuardedTool {
             }
         }
         if (!allowedSub.isEmpty()) {
+            // 允许的子命令排一次序：下面的报错文案复用同一份，避免再排一次
+            List<String> sortedAllowed = allowedSub.stream().sorted().toList();
+            String allowedText = String.join("、", sortedAllowed);
             if (args.isEmpty()) {
-                return "命令 " + name + " 需要给出子命令（允许："
-                        + String.join("、", allowedSub.stream().sorted().toList()) + "）";
+                // 必须点名 command_args：否则模型以为是自己「子命令传错」，会继续换参数名重试
+                return "参数 command_args 不能为空：命令 " + name + " 必须给出子命令（允许："
+                        + allowedText + "），例如 command_args=[\"" + sortedAllowed.get(0) + "\"]";
             }
             String first = args.get(0).toLowerCase(Locale.ROOT);
             if (!allowedSub.contains(first)) {
-                return name + " 的子命令 " + args.get(0) + " 不在允许列表内（允许："
-                        + String.join("、", allowedSub.stream().sorted().toList()) + "）";
+                return name + " 的子命令 " + args.get(0) + " 不在允许列表内（command_args 的第一个元素就是子命令，允许："
+                        + allowedText + "）";
             }
         }
         return null;

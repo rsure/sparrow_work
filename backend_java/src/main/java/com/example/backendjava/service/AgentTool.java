@@ -3,6 +3,8 @@ package com.example.backendjava.service;
 
 // 标准库：Map 用于工具入参
 import java.util.Map;
+// 标准库：List 用于参数声明（空列表 = 不声明字段）
+import java.util.List;
 
 // 工具执行结果（成功/失败 + 输出）
 import com.example.backendjava.dto.ToolResult;
@@ -38,6 +40,26 @@ public interface AgentTool {
      * @return 策略枚举
      */
     ToolPolicy policy();
+
+    /**
+     * 工具参数声明：字段名、类型、是否必填、每个字段是什么意思。
+     *
+     * <p>默认返回空列表，表示「不声明」——上层会翻译成开放对象 schema，任何字段都放行。
+     * 这是历史兼容：老工具的说明文字里写了字段名，模型照着填也能用。</p>
+     *
+     * <p>但模型看不到字段名时只能猜：线上出现过把 {@code command_args} 猜成
+     * args / subcommand / argv 十几种写法、每一轮都被拒的情况。
+     * 所以新写或改动的工具应当覆盖本方法，返回真实字段声明。</p>
+     *
+     * <p>这里刻意返回项目自己的 {@link ToolParameter}，不用模型库的 schema 类型：
+     * service 层接口不暴露第三方类型（见 04-AI代码生成规范 §4.2），
+     * 翻译成 JSON Schema 的活由 {@code tools.ToolSchemaMapper} 统一做。</p>
+     *
+     * @return 参数字段列表；空列表表示不声明字段
+     */
+    default List<ToolParameter> parameters() {
+        return List.of();
+    }
 
     /**
      * 执行工具。
