@@ -741,41 +741,98 @@ public class ChatServiceImpl implements ChatService {
      */
     @Override
     public ChatDtos.ChatSessionPatchResult patchSession(String sessionId, ChatDtos.ChatSessionPatch patch) {
-        return null;
+        ChatSession row = chatPersistence.findSession(sessionId).orElse(null);
+        // 会话不存在：回全空，前端据此提示「会话已不在」
+        if (row == null) {
+            return new ChatDtos.ChatSessionPatchResult(false, sessionId, "", false, false);
+        }
+        boolean renamed = false;
+        // 只有传了非空标题、且与旧标题不同才算「真的改名」
+        if (patch.title() != null && !patch.title().isBlank() && !patch.title().equals(row.getTitle())) {
+            row.setTitle(patch.title());
+            renamed = true;
+        }
+        // 置顶/归档用包装类型 Boolean，null 表示「没传、不改」
+        if (patch.pinned() != null) {
+            row.setPinned(patch.pinned());
+        }
+        if (patch.archived() != null) {
+            row.setArchived(patch.archived());
+        }
+        chatSessionRepository.save(row);
+        return new ChatDtos.ChatSessionPatchResult(
+                renamed, sessionId, row.getTitle(),
+                Boolean.TRUE.equals(row.getPinned()), Boolean.TRUE.equals(row.getArchived()));
     }
 
     /**
-     * 导出会话内容。
+     * 导出会话内容；md 给人读，json 给再加工。
      *
      * @param sessionId 会话 id
-     * @param format    md 或 json
-     * @return 导出结果
+     * @param format    md 或 json（不区分大小写）；其它值回落到 md
+     * @return 导出结果（含建议文件名与全文）
      */
     @Override
     public ChatDtos.ExportedSession export(String sessionId, String format) {
-        return null;
+        List<ChatMessage> rows = chatPersistence.findMessages(sessionId);
+        String fmt = "json".equalsIgnoreCase(format) ? "json" : "md";
+        String content;
+        if ("json".equals(fmt)) {
+            // JSON 导出：直接序列化还原后的消息结构，方便程序再加工
+            try {
+                content = objectMapper.writerWithDefaultPrettyPrinter()
+                        .writeValueAsString(rows.stream().map(this::toStoredMessage).toList());
+            } catch (Exception e) {
+                throw new ApiException(500, "序列化会话失败：" + e.getMessage());
+            }
+        } else {
+            // Markdown 导出：标题 + 每条消息，适合人阅读
+            StringBuilder sb = new StringBuilder();
+            sb.append("# ").append(sessionTitle(sessionId)).append("\n\n");
+            for (ChatMessage row : rows) {
+                sb.append("## ").append("user".equals(row.getRole()) ? "用户" : "助手").append("\n\n");
+                sb.append(row.getContent()).append("\n\n");
+            }
+            content = sb.toString();
+        }
+        return new ChatDtos.ExportedSession(sessionId, fmt, "chat-" + sessionId + "." + fmt, content, rows.size());
     }
-
     /**
-     * 读取会话级 token / 费用汇总。
+     * 读取会话级用量汇总。
+     *
+     * <p>第一版：token 与费用还没落进消息表，先只回「轮次」（=助手消息条数），
+     * token/费用填 0，等消息表补用量字段后再回填。</p>
      *
      * @param sessionId 会话 id
      * @return 用量汇总
      */
     @Override
     public ChatDtos.SessionUsage usage(String sessionId) {
-        return null;
+        List<ChatMessage> rows = chatPersistence.findMessages(sessionId);
+        long turns = rows.stream().filter(r -> "assistant".equals(r.getRole())).count();
+        return new ChatDtos.SessionUsage(sessionId, turns, 0L, 0L, 0L, 0.0, "CNY", List.of());
     }
 
     /**
      * 永久删除某个会话及其消息。
-     *
+     *  <p>顺序：先删消息、再删会话；最后清掉运行时状态，避免侧边栏还显示「运行中」。</p>
      * @param sessionId 会话 id
      * @return 删除结果
      */
     @Override
     public ChatDtos.DeleteSessionResult deleteHistory(String sessionId) {
-        return null;
+        boolean existed = chatPersistence.findSession(sessionId).isPresent();
+        // 仓库没有按会话删除的派生方法，就把消息查出来整体删（会话级消息量不大，够用）
+        List<ChatMessage> rows = chatMessageRepository.findBySessionIdOrderByIdAsc(sessionId);
+        if (!rows.isEmpty()) {
+            chatMessageRepository.deleteAll(rows);
+        }
+        if (existed) {
+            chatSessionRepository.deleteById(sessionId);
+        }
+        // 清运行时状态（总线里的 Turn），让「已删会话」不再出现在运行态里
+        sessionBus.finish(sessionId);
+        return new ChatDtos.DeleteSessionResult(existed, sessionId);
     }
 
     /**
@@ -786,29 +843,55 @@ public class ChatServiceImpl implements ChatService {
      */
     @Override
     public ChatDtos.SessionInfo sessionInfo(String sessionId) {
-        return null;
+        ChatSession row = chatPersistence.findSession(sessionId).orElse(null);
+        if (row == null) {
+            // 不存在的会话：exists=false，其余字段一律 null
+            return new ChatDtos.SessionInfo(false, sessionId, null, null, null, false);
+        }
+        return new ChatDtos.SessionInfo(
+                true,
+                sessionId,
+                chatPersistence.countMessages(sessionId),
+                parseEpochSeconds(row.getCreatedAt()),
+                parseEpochSeconds(row.getUpdatedAt()),
+                sessionBus.isRunning(sessionId));
     }
 
     /**
-     * 清空会话上下文（保留落库历史，仅丢弃运行时状态与检查点）。
+     * 清空会话上下文：只删消息、保留会话行（区别于 deleteHistory 的「连会话一起删」）。
      *
      * @param sessionId 会话 id
      * @return 清空结果
      */
     @Override
     public ChatDtos.ClearSessionResult clearSession(String sessionId) {
-        return null;
+        boolean existed = chatPersistence.findSession(sessionId).isPresent();
+        List<ChatMessage> rows = chatMessageRepository.findBySessionIdOrderByIdAsc(sessionId);
+        if (!rows.isEmpty()) {
+            chatMessageRepository.deleteAll(rows);
+        }
+        // 清掉运行时状态与检查点，让下一轮从干净状态开始
+        sessionBus.finish(sessionId);
+        return new ChatDtos.ClearSessionResult(existed, sessionId);
     }
 
     /**
      * 按续读标记读取工具的完整输出。
+     *
+     * <p>续读标记由 OutputContract 在截断时生成；过期/被清理后 readContinuation 返回 null。</p>
      *
      * @param ref 续读标记
      * @return 完整输出
      */
     @Override
     public ChatDtos.ToolOutputPayload toolOutput(String ref) {
-        return null;
+        String content = outputContract.readContinuation(ref);
+        boolean found = content != null;
+        return new ChatDtos.ToolOutputPayload(
+                ref == null ? "" : ref,
+                found,
+                found ? content : "",
+                found ? content.length() : 0L);
     }
 
     /**

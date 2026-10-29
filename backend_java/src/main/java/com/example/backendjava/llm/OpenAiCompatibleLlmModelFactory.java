@@ -1,5 +1,5 @@
 // 模块说明：OpenAI 兼容协议的模型工厂。覆盖 OpenAI、DeepSeek 与用户自定义中转站。
-package com.example.backendjava.service.impl;
+package com.example.backendjava.llm;
 
 // Spring 组件注解：把本工厂注册成 Bean，由路由器自动发现
 import org.springframework.stereotype.Component;
@@ -15,7 +15,6 @@ import dev.langchain4j.model.chat.StreamingChatModel;
 import com.example.backendjava.common.ApiException;
 
 // 模型工厂扩展点：按供应商装配 LangChain4j ChatModel
-import com.example.backendjava.llm.LlmModelFactory;
 // 装配一个模型实例所需的参数
 import com.example.backendjava.dto.LlmModelSpec;
 

@@ -13,6 +13,7 @@ import org.springframework.data.jpa.domain.Specification;
 import org.springframework.stereotype.Service;
 
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 @Service
@@ -48,9 +49,22 @@ public class AuditServiceImpl implements AuditService {
         return (root, query, cb) -> cb.equal(root.get(column), value);
     }
 
-    private Map<String, Object> toMap(AuditLog auditLog) {
-        //TODO
-        return new HashMap<>();
+    /**
+     * 审计实体 → snake_case 字典（与前端审计页字段对齐）。
+     *
+     * @param row 审计实体
+     * @return 字典
+     */
+    private Map<String, Object> toMap(AuditLog row) {
+        Map<String, Object> map = new LinkedHashMap<>();
+        map.put("id", row.getId());
+        map.put("session_id", row.getSessionId());
+        map.put("tool", row.getTool());
+        map.put("arguments", row.getArguments());
+        map.put("success", Boolean.TRUE.equals(row.getSuccess()));
+        map.put("result", row.getResult());
+        map.put("created_at", row.getCreatedAt());
+        return map;
     }
 
 
