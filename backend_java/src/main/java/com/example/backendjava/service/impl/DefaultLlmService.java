@@ -13,12 +13,14 @@ import dev.langchain4j.model.chat.StreamingChatModel;
 import com.example.backendjava.llm.LlmService;
 // 模型工厂路由：按供应商 id 选择具体工厂
 import com.example.backendjava.llm.LlmModelFactoryRouter;
-// 内置供应商与模型清单的查询入口
+// 供应商与模型清单的查询入口（内置 + 用户自定义）
 import com.example.backendjava.llm.LlmProviderRegistry;
 // 模型接口的供应商/模型/探测 DTO 容器
 import com.example.backendjava.dto.LlmDtos;
 // 装配一个模型实例所需的参数
 import com.example.backendjava.dto.LlmModelSpec;
+// 密钥仓库：从加密存储里取出用户在设置页保存的 API Key
+import com.example.backendjava.settings.SecretStore;
 
 // 标准库：List 用于供应商清单
 import java.util.List;
@@ -26,27 +28,34 @@ import java.util.List;
 /**
  * 模型服务默认实现。
  *
- * <p>这是本工程里少数“已经完整实现”的服务之一：它不依赖数据库，
- * 只依赖模型注册表与工厂路由器，因此可以直接用来验证 Java 到模型的连通性。</p>
+ * <p>它不依赖业务数据库，只依赖模型注册表、工厂路由器与密钥仓库，
+ * 因此可以直接用来验证 Java 到模型供应商的连通性。</p>
  */
 @Service
 public class DefaultLlmService implements LlmService {
 
-    /** 供应商与模型清单。 */
+    /** 供应商与模型清单（内置 + 自定义端点）。 */
     private final LlmProviderRegistry registry;
 
     /** 模型工厂路由器：按 providerId 选择 OpenAI 兼容等具体实现。 */
     private final LlmModelFactoryRouter factoryRouter;
+
+    /** 密钥仓库：用户在设置页保存的 Key 存这里，测试连接时直接复用。 */
+    private final SecretStore secretStore;
 
     /**
      * 构造器注入。
      *
      * @param registry      模型注册表
      * @param factoryRouter 模型工厂路由器
+     * @param secretStore   密钥仓库
      */
-    public DefaultLlmService(LlmProviderRegistry registry, LlmModelFactoryRouter factoryRouter) {
+    public DefaultLlmService(LlmProviderRegistry registry,
+                             LlmModelFactoryRouter factoryRouter,
+                             SecretStore secretStore) {
         this.registry = registry;
         this.factoryRouter = factoryRouter;
+        this.secretStore = secretStore;
     }
 
     /**
@@ -62,6 +71,9 @@ public class DefaultLlmService implements LlmService {
     /**
      * 发一次极小的请求，验证密钥、模型名与网络是否可用。
      *
+     * <p>密钥取值顺序：<b>请求体显式传入（本地调试）</b> → <b>密钥库</b>。
+     * 前端点「测试连接」时不会把明文 Key 再发一次，所以必须能读到密钥库。</p>
+     *
      * @param request 测试参数
      * @return 结构化测试结果；不会抛出网络异常
      */
@@ -70,7 +82,7 @@ public class DefaultLlmService implements LlmService {
         // 记录开始时间，用于计算耗时；使用纳秒避免短请求显示 0ms
         long startedNanos = System.nanoTime();
         try {
-            // 供应商必须存在；不存在时 resolveModel 会抛 404
+            // 供应商必须存在；不存在时直接 404（provider_id 为 null 也会走到这里，提示里带 null）
             LlmDtos.ProviderInfo provider = registry.findProvider(request.providerId())
                     .orElseThrow(() -> new ApiException(404, "未知的模型供应商：" + request.providerId()));
 
@@ -80,16 +92,18 @@ public class DefaultLlmService implements LlmService {
             // 接口地址优先用请求里显式传入的，其次用注册表默认值
             String baseUrl = isBlank(request.baseUrl()) ? provider.baseUrl() : request.baseUrl();
 
-            // 需要密钥的供应商必须提供 Key；当前脚手架从请求体读取，正式实现应改为密钥库
-            if (provider.requiresKey() && isBlank(request.apiKey())) {
-                throw new ApiException(400, "尚未配置 " + provider.label() + " 的 API 密钥");
+            // 密钥：请求体 > 密钥库；只有本地调试才会把 Key 放进请求体
+            String apiKey = isBlank(request.apiKey()) ? secretOf(provider) : request.apiKey().strip();
+            if (provider.requiresKey() && isBlank(apiKey)) {
+                throw new ApiException(400, "尚未配置 " + provider.label() + " 的 API 密钥，"
+                        + "请到设置页的「模型」分区填写（对应设置项：" + provider.secretKey() + "）");
             }
 
             // 组装模型参数：温度固定 0，尽量让 ping 请求稳定
             LlmModelSpec spec = new LlmModelSpec(
                     request.providerId(),
                     modelInfo.model(),
-                    request.apiKey(),
+                    apiKey,
                     baseUrl,
                     0.0,
                     null
@@ -133,6 +147,24 @@ public class DefaultLlmService implements LlmService {
     @Override
     public StreamingChatModel createStreamingModel(LlmModelSpec spec) {
         return factoryRouter.createStreamingModel(spec);
+    }
+
+    /**
+     * 从密钥库取出供应商的 API Key。
+     *
+     * @param provider 供应商描述（提供密钥在库里的名字）
+     * @return 密钥；供应商不需要密钥、还没配置或读库失败时返回 null
+     */
+    private String secretOf(LlmDtos.ProviderInfo provider) {
+        if (isBlank(provider.secretKey())) {
+            return null;
+        }
+        try {
+            return secretStore.getSecret(provider.secretKey()).orElse(null);
+        } catch (RuntimeException e) {
+            // 密钥库读失败按「没配置」处理：让上层给出「去设置页填写」的提示，而不是 500
+            return null;
+        }
     }
 
     /**

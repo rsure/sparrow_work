@@ -6,6 +6,10 @@ import com.fasterxml.jackson.annotation.JsonProperty;
 
 // 标准库：List 用于返回模型清单
 import java.util.List;
+// Jackson 注解：兼容旧前端字段名（provider），避免前后端各写各的
+import com.fasterxml.jackson.annotation.JsonAlias;
+
+
 
 /**
  * LLM 接口的 DTO 集合。
@@ -90,14 +94,25 @@ public final class LlmDtos {
      * @param baseUrl    接口地址；为空时用供应商默认地址
      * @param apiKey     API Key；为空时由后续的密钥服务补齐（当前脚手架暂未实现）
      */
+    /**
+     * 模型连通性测试请求。
+     *
+     * <p>兼容两种字段名：新约定是 {@code provider_id}，旧前端发的是 {@code provider}，
+     * 用 {@link JsonAlias} 让两个名字都能反序列化到同一个字段，前后端不必同时上线。</p>
+     *
+     * @param providerId 供应商 id，如 deepseek / custom-myapi
+     * @param model      模型名；为空时取该供应商的第一个模型
+     * @param baseUrl    接口地址；为空时用供应商默认地址
+     * @param apiKey     API Key；为空时从密钥库读取（仅本地调试才需要显式传）
+     */
     public record ProbeRequest(
-            // 供应商 id，如 deepseek
-            @JsonProperty("provider_id") String providerId,
+            // 供应商 id，如 deepseek；同时接受旧字段名 provider
+            @JsonProperty("provider_id") @JsonAlias("provider") String providerId,
             // 模型名；可空
             String model,
             // 接口地址；可空
             @JsonProperty("base_url") String baseUrl,
-            // API Key；仅用于本地测试，正式实现应从密钥库读取
+            // API Key；仅用于本地调试，正常情况留空、由密钥库补齐
             @JsonProperty("api_key") String apiKey
     ) {
     }

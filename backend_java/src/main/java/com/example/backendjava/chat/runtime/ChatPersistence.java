@@ -75,6 +75,44 @@ public class ChatPersistence {
     }
 
     /**
+     * 写一条助手消息，连同本轮的用量与模型名。
+     *
+     * <p>为什么不复用 {@link #saveMessage}：那个方法要传 7 个位置参数，
+     * 再加 4 个用量参数就彻底读不懂了；助手消息是唯一带用量的角色，单独开一个方法更清楚。</p>
+     *
+     * @param sessionId    会话 id
+     * @param content      回答正文
+     * @param mode         对话模式：agent / doc
+     * @param toolCalls    工具轨迹 JSON；没有调用工具时为 null
+     * @param finishReason 结束原因：done / stopped
+     * @param elapsed      本轮耗时（秒）
+     * @param model        实际使用的模型名；doc 模式可能为空
+     * @param inputTokens  输入 token；未知时传 0
+     * @param outputTokens 输出 token；未知时传 0
+     * @param cost         折算费用（元）；单价未知时传 0
+     */
+    @Transactional
+    public void saveAssistantMessage(String sessionId, String content, String mode, String toolCalls,
+                                     String finishReason, Double elapsed, String model,
+                                     long inputTokens, long outputTokens, double cost) {
+        ChatMessage row = new ChatMessage();
+        row.setSessionId(sessionId);
+        row.setRole("assistant");
+        row.setContent(content == null ? "" : content);
+        row.setMode(mode);
+        row.setToolCalls(toolCalls);
+        row.setFinishReason(finishReason);
+        row.setElapsed(elapsed);
+        row.setModel(model);
+        // 用量统一落成 0 而不是 null：聚合时不用到处判空，0 与「未知」在展示上等价
+        row.setInputTokens(inputTokens);
+        row.setOutputTokens(outputTokens);
+        row.setCost(cost);
+        row.setCreatedAt(Instant.now().toString());
+        messages.save(row);
+    }
+
+    /**
      * 确保会话存在并刷新 updated_at；首轮用第一句话当标题。
      *
      * @param sessionId 会话 id

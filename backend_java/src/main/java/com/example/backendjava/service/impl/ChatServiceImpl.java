@@ -528,11 +528,16 @@ public class ChatServiceImpl implements ChatService {
                     + "请到设置页的「模型」分区填写（对应设置项：" + provider.secretKey() + "）");
         }
 
-        // 接口地址：显式配置优先（用户可能走代理/中转站），没配才用供应商官方地址
+        // 接口地址：
+        //   - 自定义端点：必须用它自己的 base_url（用户就是冲着这个地址来的，不能被全局配置覆盖）
+        //   - 内置供应商：保持「全局配置优先」，允许走代理/中转站
         String configuredBaseUrl = (String) settingsRegistry.getSetting("llm.base_url");
-        String baseUrl = StrUtil.isBlank(configuredBaseUrl)
-                ? provider.baseUrl()
-                : configuredBaseUrl.trim();
+        String baseUrl;
+        if (provider.isCustom()) {
+            baseUrl = provider.baseUrl();
+        } else {
+            baseUrl = StrUtil.isBlank(configuredBaseUrl) ? provider.baseUrl() : configuredBaseUrl.trim();
+        }
 
         // 温度在注册表里声明为 FLOAT，值已保证落在 0.0~2.0
         Double temperature = ((Number) settingsRegistry.getSetting("llm.temperature")).doubleValue();
@@ -798,10 +803,10 @@ public class ChatServiceImpl implements ChatService {
         return new ChatDtos.ExportedSession(sessionId, fmt, "chat-" + sessionId + "." + fmt, content, rows.size());
     }
     /**
-     * 读取会话级用量汇总。
+     * 读取会话级用量汇总：总 token、总费用，并按模型拆分。
      *
-     * <p>第一版：token 与费用还没落进消息表，先只回「轮次」（=助手消息条数），
-     * token/费用填 0，等消息表补用量字段后再回填。</p>
+     * <p>数据来源是助手消息上的四个用量列；用户消息与 doc 模式里未调用模型的轮次不计入 token，
+     * 但轮次数仍然按助手消息条数统计（与旧行为保持一致）。</p>
      *
      * @param sessionId 会话 id
      * @return 用量汇总
@@ -809,8 +814,50 @@ public class ChatServiceImpl implements ChatService {
     @Override
     public ChatDtos.SessionUsage usage(String sessionId) {
         List<ChatMessage> rows = chatPersistence.findMessages(sessionId);
-        long turns = rows.stream().filter(r -> "assistant".equals(r.getRole())).count();
-        return new ChatDtos.SessionUsage(sessionId, turns, 0L, 0L, 0L, 0.0, "CNY", List.of());
+        // 按模型聚合：LinkedHashMap 保留「第一次出现」的顺序，面板看起来更稳定
+        Map<String, ModelAccumulator> byModel = new LinkedHashMap<>();
+        long turns = 0L;
+        long inputTotal = 0L;
+        long outputTotal = 0L;
+        double costTotal = 0.0;
+
+        for (ChatMessage row : rows) {
+            // 只有助手消息带用量；用户消息直接跳过
+            if (!"assistant".equals(row.getRole())) {
+                continue;
+            }
+            turns++;
+            long input = row.getInputTokens() == null ? 0L : row.getInputTokens();
+            long output = row.getOutputTokens() == null ? 0L : row.getOutputTokens();
+            double cost = row.getCost() == null ? 0.0 : row.getCost();
+
+            inputTotal += input;
+            outputTotal += output;
+            costTotal += cost;
+
+            // 早期数据 / doc 模式没有模型名：归到 unknown，前端照样能展示
+            String model = (row.getModel() == null || row.getModel().isBlank())
+                    ? "unknown"
+                    : row.getModel();
+            byModel.computeIfAbsent(model, ignored -> new ModelAccumulator()).add(input + output, cost);
+        }
+
+        List<ChatDtos.ModelUsage> perModel = new ArrayList<>(byModel.size());
+        for (Map.Entry<String, ModelAccumulator> entry : byModel.entrySet()) {
+            ModelAccumulator accumulator = entry.getValue();
+            perModel.add(new ChatDtos.ModelUsage(
+                    entry.getKey(), accumulator.turns, accumulator.tokens, round4(accumulator.cost)));
+        }
+
+        return new ChatDtos.SessionUsage(
+                sessionId,
+                turns,
+                inputTotal,
+                outputTotal,
+                inputTotal + outputTotal,
+                round4(costTotal),
+                "CNY",
+                perModel);
     }
 
     /**
@@ -975,5 +1022,43 @@ public class ChatServiceImpl implements ChatService {
         return chatSessionRepository.findById(sessionId)
                 .map(ChatSession::getTitle)
                 .orElse("会话");
+    }
+
+
+    /**
+     * 按模型聚合用量的小累加器（只在本类的 {@code usage()} 里使用）。
+     */
+    private static final class ModelAccumulator {
+
+        /** 该模型的助手消息条数（= 轮次）。 */
+        private long turns;
+
+        /** 该模型累计 token（input + output）。 */
+        private long tokens;
+
+        /** 该模型累计费用（元）。 */
+        private double cost;
+
+        /**
+         * 累加一轮。
+         *
+         * @param turnTokens 本轮 token（input + output）
+         * @param turnCost   本轮费用（元）
+         */
+        void add(long turnTokens, double turnCost) {
+            turns++;
+            tokens += turnTokens;
+            cost += turnCost;
+        }
+    }
+
+    /**
+     * 保留四位小数，避免浮点误差在用量面板里显示成 0.30000000000000004。
+     *
+     * @param value 原始值
+     * @return 四舍五入到四位小数
+     */
+    private static double round4(double value) {
+        return Math.round(value * 10_000.0) / 10_000.0;
     }
 }
