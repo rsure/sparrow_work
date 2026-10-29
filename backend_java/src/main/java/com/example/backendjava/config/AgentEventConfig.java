@@ -63,7 +63,26 @@ public class AgentEventConfig {
         // 用 cached 池：一轮对话一个线程，等待确认时会长时间占住，固定大小容易饿死
         return Executors.newCachedThreadPool(factory);
     }
-
+    /**
+     * 记忆抽取线程池（单线程）。
+     *
+     * <p>为什么单独开：记忆抽取是一次额外的模型调用，慢且可以失败；
+     * 如果和 {@link #chatTurnExecutor()} 混用，会跟下一轮对话抢线程，让用户感觉「发消息没反应」。
+     * 单线程足够——抽取本来就该排在对话后面，不急着并行。</p>
+     *
+     * @return 单线程池；Bean 名 memoryExtractExecutor 供 {@code @Resource} 按名注入
+     */
+    @Bean(destroyMethod = "shutdown")
+    public ExecutorService memoryExtractExecutor() {
+        AtomicInteger counter = new AtomicInteger(1);
+        ThreadFactory factory = runnable -> {
+            Thread thread = new Thread(runnable, "memory-extract-" + counter.getAndIncrement());
+            // 守护线程：应用关闭时不阻塞 JVM 退出
+            thread.setDaemon(true);
+            return thread;
+        };
+        return Executors.newSingleThreadExecutor(factory);
+    }
     /**
      * 全局事件出口链。
      *

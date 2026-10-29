@@ -58,6 +58,40 @@ import java.time.LocalDateTime;
 import java.util.*;
 import java.util.concurrent.ExecutorService;
 import java.util.stream.Collectors;
+// 记忆服务：新对话注入工作区记忆 + 每轮结束异步抽取
+import com.example.backendjava.service.MemoryService;
+// 技能服务：把「技能名 + 描述」拼进系统提示词
+import com.example.backendjava.service.SkillService;
+// RAG 服务：\doc 模式下列表 / 删除 / 导入 / 检索
+import com.example.backendjava.service.RagService;
+// 记忆接口的请求 DTO：注入时用 search，抽取时用 extract
+import com.example.backendjava.dto.MemoryDtos;
+// 预算登记表：把本轮用量喂给熔断
+import com.example.backendjava.tools.ToolBudgetRegistry;
+// 进程内摘要缓存：同一批历史只摘要一次，不存在消息表里（重启后重新摘要一次即可）
+import java.util.concurrent.ConcurrentHashMap;
+// LangChain4j 用户消息：把数据库里的 user 行还原成模型认识的消息对象
+import dev.langchain4j.data.message.UserMessage;
+// LangChain4j 助手消息：把数据库里的 assistant 行还原成模型认识的消息对象
+import dev.langchain4j.data.message.AiMessage;
+// LangChain4j 对话记忆接口：AiServices 每轮自动带上这里的内容
+import dev.langchain4j.memory.ChatMemory;
+// LangChain4j 滑动窗口记忆：只保留最近 maxMessages 条，超出的自动丢弃
+import dev.langchain4j.memory.chat.MessageWindowChatMemory;
+// LangChain4j 同步聊天模型：摘要压缩与 \doc 问答用它（不需要流式）
+import dev.langchain4j.model.chat.ChatModel;
+// LangChain4j 流式响应体：onCompleteResponse 回调的形参类型
+import dev.langchain4j.model.chat.response.ChatResponse;
+// 标准库：判断导入的文件是否存在 / 是不是目录
+import java.nio.file.Files;
+// 标准库：把用户输入的路径转成绝对路径（相对路径按后端进程的工作目录解析）
+import java.nio.file.Path;
+// 标准库：正则匹配器，解析 `\doc` 前缀后面的子命令
+import java.util.regex.Matcher;
+// 标准库：正则表达式，识别 `\doc` 前缀（大小写不敏感、允许换行）
+import java.util.regex.Pattern;
+// RAG 接口的请求/响应 DTO：文档列表、入库、检索都用到
+import com.example.backendjava.dto.RagDtos;
 
 // 字符串工具：判断前端传来的 session_id / 工具参数 JSON 是否为空白
 // Jackson 泛型类型引用：把工具参数的 JSON 文本解析成 Map<String, Object>
@@ -173,6 +207,335 @@ public class ChatServiceImpl implements ChatService {
     // 对象映射：JSON 序列化（审计、用量等）
     @Resource
     private ObjectMapper objectMapper;
+    /** 预算登记表：本轮结束后把 token / 费用累加进去，供下一次工具调用前核对。 */
+    @Resource
+    private ToolBudgetRegistry toolBudgetRegistry;
+
+    /** 记忆服务：首轮注入工作区记忆，每轮结束异步抽取。 */
+    @Resource
+    private MemoryService memoryService;
+
+    /** 技能服务：把可用技能清单拼进系统提示词。 */
+    @Resource
+    private SkillService skillService;
+
+    /** RAG 服务：`\doc` 模式的列表 / 删除 / 导入 / 检索都走它。 */
+    @Resource
+    private RagService ragService;
+
+    /** 记忆抽取线程池：单线程、守护线程，避免占用对话轮次线程。 */
+    @Resource
+    private ExecutorService memoryExtractExecutor;
+
+    /** 每次补种上下文最多读多少条历史；再早的内容只能靠摘要。 */
+    private static final int MAX_SEED_MESSAGES = 200;
+
+    /** 模型窗口未知时的兜底值（token）；宁可早压缩，也不要等供应商报 context length 错误。 */
+    private static final int DEFAULT_CONTEXT_WINDOW = 32_768;
+
+    /** 送去摘要的原文最大字符数；超出部分直接省略，避免「为了压缩反而先超窗」。 */
+    private static final int MAX_SUMMARY_INPUT_CHARS = 8_000;
+
+    /** 摘要本身的最大字符数；太长会挤占本轮的对话预算。 */
+    private static final int MAX_SUMMARY_CHARS = 1_200;
+
+    /** 最多注入多少个技能名；技能很多时只提示前 N 个，避免提示词被技能清单占满。 */
+    private static final int MAX_INJECTED_SKILLS = 30;
+
+    /** 技能描述压成一行后的最大字符数。 */
+    private static final int MAX_SKILL_DESCRIPTION_CHARS = 120;
+    /** `\doc -l` 最多列出多少篇文档；再多就建议用户去「知识库」页看。 */
+    private static final int DOC_LIST_LIMIT = 50;
+
+    /** `\doc` 后面什么都没写时的默认问题。 */
+    private static final String DOC_DEFAULT_QUERY = "请概括这份文档的主要内容";
+
+    /** 送进提示词的单个片段最大字符数。 */
+    private static final int MAX_DOC_SNIPPET_CHARS = 1_200;
+
+    /** 送进提示词的全部片段总字符上限，避免检索结果把窗口占满。 */
+    private static final int MAX_DOC_CONTEXT_CHARS = 6_000;
+
+    /** 识别 `\doc` 前缀：允许大小写混写，`.` 跨行匹配（用户可能粘贴多行内容）。 */
+    private static final Pattern DOC_PREFIX =
+            Pattern.compile("^\\\\doc\\b[ \\t]*(.*)$", Pattern.DOTALL | Pattern.CASE_INSENSITIVE);
+
+    /** `\doc` 的帮助类动词。 */
+    private static final Set<String> HELP_VERBS = Set.of("-h", "--help", "?", "？", "help");
+
+    /** `\doc` 的列文档动词。 */
+    private static final Set<String> LIST_VERBS = Set.of("-l", "--list", "-ls");
+
+    /** `\doc` 的删除动词。 */
+    private static final Set<String> DELETE_VERBS = Set.of("-d", "--delete", "-rm");
+
+    /** `\doc` 的导入动词。 */
+    private static final Set<String> IMPORT_VERBS = Set.of("-i", "--import", "-a", "--add");
+
+    /** `\doc -h` 的完整用法文本；写入 Java 源码时反斜杠要写两遍（`\\doc`）。 */
+    private static final String DOC_HELP_TEXT = """
+            \\doc 知识库指令
+              \\doc -h, --help, ?        显示本帮助
+              \\doc -l, --list, -ls      列出已入库的文档（最多 50 篇）
+              \\doc -d, --delete <名字>  按文档名或来源删除一篇文档
+              \\doc -i, --import <路径>  把本地文件导入知识库（一次一个文件）
+              \\doc <问题>               在知识库里检索并回答（片段数由请求里的 doc_top_k 决定）
+
+            说明：
+            - 名字可以只写一部分，按「完全匹配 → 包含匹配」的顺序找；
+            - 不带 \\doc 前缀的消息仍按普通 Agent 对话处理。
+            """;
+
+    /**
+     * 解析一条 `\doc` 指令。
+     *
+     * @param message 用户原始输入
+     * @return 解析结果；永不为 null
+     */
+    private DocCommand parseDocCommand(String message) {
+        String text = nvl(message).strip();
+        Matcher matcher = DOC_PREFIX.matcher(text);
+        // 没有 `\doc` 前缀：整句当作检索问题
+        if (!matcher.matches()) {
+            return new DocCommand("search", "", text);
+        }
+        String rest = matcher.group(1).strip();
+        // 只写了 `\doc`：按「用户想看看怎么用」处理，直接回帮助
+        if (rest.isEmpty()) {
+            return new DocCommand("help", "", "");
+        }
+        String verb = rest.split("\\s+", 2)[0];
+        String argument = rest.length() > verb.length()
+                ? rest.substring(verb.length()).strip()
+                : "";
+        // 动词统一小写再比对，避免 `-L` / `-D` 之类因为大小写被当成问题
+        String lower = verb.toLowerCase(Locale.ROOT);
+
+        if (HELP_VERBS.contains(lower)) {
+            return new DocCommand("help", "", "");
+        }
+        if (LIST_VERBS.contains(lower)) {
+            return new DocCommand("list", "", "");
+        }
+        if (DELETE_VERBS.contains(lower)) {
+            // 少了文件名：回 unknown，让 executeDocCommand 给出用法提示
+            return argument.isEmpty()
+                    ? new DocCommand("unknown", verb, "")
+                    : new DocCommand("delete", argument, "");
+        }
+        if (IMPORT_VERBS.contains(lower)) {
+            return argument.isEmpty()
+                    ? new DocCommand("unknown", verb, "")
+                    : new DocCommand("import", argument, "");
+        }
+        // 以 - 开头但不在任何命令表里：明确回「不认识」，不要当成问题去检索
+        if (lower.startsWith("-")) {
+            return new DocCommand("unknown", verb, argument);
+        }
+        // 其余情况：整段（含第一个词）都是问题
+        return new DocCommand("search", "", rest);
+    }
+
+    /**
+     * 执行一条 `\doc` 指令，返回要一次性推给前端的文本。
+     *
+     * @param request 本轮请求（用到 message / docTopK / mode）
+     * @return 回答或提示文本；永不为 null
+     */
+    private String executeDocCommand(ChatDtos.ChatRequest request) {
+        DocCommand command = parseDocCommand(request.message());
+        return switch (command.action()) {
+            case "help" -> DOC_HELP_TEXT;
+            case "list" -> docList();
+            case "delete" -> docDelete(command.target());
+            case "import" -> docImport(command.target());
+            case "unknown" -> "不认识的 \\doc 子命令：" + command.target() + "\n\n" + DOC_HELP_TEXT;
+            case "search" -> docAnswer(command.query(), request.docTopK());
+            // 理论上不会走到：动作集合是封闭的，兜底回帮助
+            default -> DOC_HELP_TEXT;
+        };
+    }
+
+    /**
+     * `\doc -l`：列出已入库的文档。
+     *
+     * @return 文档清单文本
+     */
+    private String docList() {
+        List<RagDtos.RagDocument> documents = ragService.listDocuments(DOC_LIST_LIMIT, 0);
+        if (documents.isEmpty()) {
+            return "知识库里还没有文档。用 `\\doc -i <文件路径>` 导入一份。";
+        }
+        StringBuilder text = new StringBuilder("知识库文档（最多显示 " + DOC_LIST_LIMIT + " 篇）：\n");
+        for (RagDtos.RagDocument document : documents) {
+            text.append("- #").append(document.id()).append(' ')
+                    .append(docDisplayName(document))
+                    .append("（").append(document.chunks()).append(" 个片段）\n");
+        }
+        text.append("\n删除用 `\\doc -d <名字>`，导入用 `\\doc -i <文件路径>`。");
+        return text.toString();
+    }
+
+    /**
+     * `\doc -d <名字>`：按名字删除一篇文档。
+     *
+     * @param target 用户写的文档名（允许只写一部分）
+     * @return 操作结果文本
+     */
+    private String docDelete(String target) {
+        RagDtos.RagDocument matched = findDoc(target);
+        if (matched == null) {
+            return "知识库里没有找到「" + target + "」。先发 `\\doc -l` 看看有哪些文档。";
+        }
+        ragService.deleteById(matched.id());
+        return "已删除文档 #" + matched.id() + " " + docDisplayName(matched) + "。";
+    }
+
+    /**
+     * `\doc -i <路径>`：把一个本地文件导入知识库。
+     *
+     * @param target 用户写的文件路径
+     * @return 操作结果文本
+     */
+    private String docImport(String target) {
+        Path path;
+        try {
+            path = Path.of(target).toAbsolutePath().normalize();
+        } catch (RuntimeException e) {
+            // 路径里有非法字符（例如 Windows 保留名）：给出可读提示而不是堆栈
+            return "路径不合法：" + target;
+        }
+        if (!Files.exists(path)) {
+            return "文件不存在：" + path;
+        }
+        if (Files.isDirectory(path)) {
+            return "这是一个目录，不是文件：" + path + "\n一次只能导入一个文件，请指定目录里的具体文件。";
+        }
+        try {
+            RagDtos.IndexResult result = ragService.indexFile(
+                    new RagDtos.IndexFileRequest(path.toString(), path.toString(), null, false));
+            return "已导入 " + path.getFileName() + "：动作 " + result.action()
+                    + "，共 " + result.totalChunks() + " 个片段（本次新建 " + result.newChunks() + " 个）。";
+        } catch (RuntimeException e) {
+            return "导入失败：" + e.getMessage();
+        }
+    }
+
+    /**
+     * `\doc <问题>`：先检索，再让模型只依据检索结果回答。
+     *
+     * @param query 用户问题
+     * @param topK  片段数上限（来自请求的 doc_top_k）
+     * @return 回答文本；模型不可用时退回「直接给命中片段」
+     */
+    private String docAnswer(String query, int topK) {
+        String question = nvl(query).strip();
+        if (question.isEmpty()) {
+            question = DOC_DEFAULT_QUERY;
+        }
+
+        List<RagDtos.SearchHit> hits;
+        try {
+            int safeTopK = Math.max(1, Math.min(20, topK));
+            hits = ragService.search(new RagDtos.SearchRequest(
+                    question, safeTopK, null, null, null));
+        } catch (RuntimeException e) {
+            return "检索失败：" + e.getMessage();
+        }
+        if (hits.isEmpty()) {
+            return "知识库里没有找到与「" + question + "」相关的内容。可以先发 `\\doc -l` 看看有哪些文档。";
+        }
+
+        StringBuilder context = new StringBuilder();
+        int used = 0;
+        for (RagDtos.SearchHit hit : hits) {
+            if (used >= MAX_DOC_CONTEXT_CHARS) {
+                break;
+            }
+            String text = nvl(hit.text());
+            if (text.length() > MAX_DOC_SNIPPET_CHARS) {
+                text = text.substring(0, MAX_DOC_SNIPPET_CHARS) + "…";
+            }
+            context.append("[#").append(hit.chunkId()).append("] ")
+                    .append(docDisplayName(hit)).append("：\n")
+                    .append(text).append("\n\n");
+            used += text.length();
+        }
+
+        String prompt = "请只依据下面的资料回答问题；资料里没有的内容就直接说「资料里没有提到」，不要编造。\n\n"
+                + "资料：\n" + context + "\n问题：" + question;
+        try {
+            ChatModel chatModel = llmModelFactoryRouter.createChatModel(buildModelSpec());
+            String answer = chatModel.chat(prompt);
+            return answer == null || answer.isBlank() ? "（模型没有给出回答）" : answer.strip();
+        } catch (RuntimeException e) {
+            // 模型不可用时至少把命中片段给用户，别让 `\doc 问题` 完全无输出
+            return "模型调用失败（" + e.getMessage() + "），先给你命中的资料：\n\n" + context;
+        }
+    }
+
+    /**
+     * 按名字找一篇文档：先精确匹配，再包含匹配。
+     *
+     * @param target 用户写的名字
+     * @return 命中的文档；找不到时为 null
+     */
+    private RagDtos.RagDocument findDoc(String target) {
+        String needle = nvl(target).strip();
+        if (needle.isEmpty()) {
+            return null;
+        }
+        List<RagDtos.RagDocument> documents = ragService.listDocuments(DOC_LIST_LIMIT, 0);
+        // 第一轮：完全相等（忽略大小写），避免「报告」误删「年度报告」
+        for (RagDtos.RagDocument document : documents) {
+            if (needle.equalsIgnoreCase(docDisplayName(document))) {
+                return document;
+            }
+        }
+        // 第二轮：包含匹配，允许用户只写文件名的一部分
+        for (RagDtos.RagDocument document : documents) {
+            if (docDisplayName(document).contains(needle)) {
+                return document;
+            }
+        }
+        return null;
+    }
+
+    /**
+     * 取文档的展示名：标题 → 文件名 → 来源。
+     *
+     * @param document 文档
+     * @return 展示名；永不为 null
+     */
+    private static String docDisplayName(RagDtos.RagDocument document) {
+        if (document.title() != null && !document.title().isBlank()) {
+            return document.title();
+        }
+        if (document.name() != null && !document.name().isBlank()) {
+            return document.name();
+        }
+        return nvl(document.source());
+    }
+
+    /**
+     * 取检索命中的展示名：标题 → 来源。
+     *
+     * @param hit 检索命中
+     * @return 展示名；永不为 null
+     */
+    private static String docDisplayName(RagDtos.SearchHit hit) {
+        if (hit.title() != null && !hit.title().isBlank()) {
+            return hit.title();
+        }
+        return nvl(hit.source());
+    }
+    /**
+     * 会话级摘要缓存：sessionId → 已压缩内容的摘要。
+     *
+     * <p>放内存而不是落库：摘要属于「可重算的派生数据」，重启后重新摘要一次即可；
+     * 落库反而要处理「消息被删了摘要还留着」的一致性问题。</p>
+     */
+    private final Map<String, SummaryCache> summaryCache = new ConcurrentHashMap<>();
 
     /** 系统提示词：启动时一次性读入，之后每轮对话复用；修改模板后需重启服务才会生效。 系统提示词不应该暴露给用户随意修改*/
     private String systemPrompt;
@@ -263,7 +626,7 @@ public class ChatServiceImpl implements ChatService {
 
 
     /**
-     * 真正执行一轮对话：装配模型、跑工具循环、发事件、落库。
+     * 真正执行一轮对话：补种上下文 → 落用户消息 → （doc 模式分支）→ 装配模型 → 跑工具循环 → 落库收尾。
      *
      * <p>本方法运行在 chatTurnExecutor 线程上，允许长时间阻塞（包括等待用户确认）。</p>
      *
@@ -281,16 +644,26 @@ public class ChatServiceImpl implements ChatService {
             // 1) thinking：让用户立刻看到「我在动」，而不是盯着空屏幕
             sessionBus.emit(sessionId, chatEvents.thinking(sessionId, "start", 0, 0, "正在准备对话…"));
 
-            // 2) 读历史并补种上下文（第一版可以只读条数，不真的补进模型）
-            List<ChatMessage> history = chatMessageRepository.findBySessionIdOrderByIdAsc(sessionId);
+            // 2) 先读历史（此时还不含本轮用户消息），必要时压缩；历史会真正进入模型请求
+            SeedContext seed = buildSeedContext(sessionId);
             sessionBus.emit(sessionId, chatEvents.thinking(sessionId, "history",
-                    System.currentTimeMillis() - startedAt, history.size(),
-                    "已载入 " + history.size() + " 条历史消息"));
+                    System.currentTimeMillis() - startedAt, seed.recent().size(),
+                    "已载入 " + seed.recent().size() + " 条历史消息"));
 
             // 3) 落用户消息（先落库，避免崩溃时丢失用户输入）
-            persistMessage(sessionId, "user", request.message(), turnId);
+            persistMessage(sessionId, "user", request.message(), request.mode());
 
-            // 4) 建模型（供应商/模型名/密钥都在 buildModelSpec 里，已有实现不用动）
+            // 3.1) doc 模式：解析 `\doc` 子命令，确定性分支不进模型工具循环
+            if ("doc".equals(request.mode())) {
+                String answer = executeDocCommand(request);
+                recorder.appendAnswer(answer);
+                // 一次性发给前端：doc 命令要么是即时结果，要么是同步问答，不需要逐字流
+                sessionBus.emit(sessionId, chatEvents.token(answer));
+                // 直接返回，finally 里统一 finishTurn（落库 + done + 关流）
+                return;
+            }
+
+            // 4) 建模型（供应商/模型名/密钥都在 buildModelSpec 里）
             LlmModelSpec spec = buildModelSpec();
             StreamingChatModel chatModel = llmModelFactoryRouter.createStreamingModel(spec);
             recorder.setModel(spec.model());
@@ -298,18 +671,24 @@ public class ChatServiceImpl implements ChatService {
             // 5) 组装工具表：每个工具包一层 ChatToolExecutor，事件就有了
             Map<ToolSpecification, ToolExecutor> tools = buildEventedToolMap(sessionId, recorder);
 
-            // 6) 建 AiServices：这里是「自动工具循环」——模型要工具就自动执行再回来
+            // 6) 建 AiServices：
+            //    - systemMessage 每轮现拼（记忆 / 技能 / 摘要），不写进记忆，避免被窗口挤掉；
+            //    - chatMemory 负责把历史（以及本轮用户消息）真正带给模型。
             Assistant assistant = AiServices.builder(Assistant.class)
                     .streamingChatModel(chatModel)
-                    .systemMessage(systemPrompt)
+                    .systemMessage(buildSystemMessage(seed, request.message()))
+                    .chatMemory(buildChatMemory(seed.recent()))
                     .tools(tools)
                     .maxToolCallingRoundTrips(request.maxIterations())
                     .build();
 
             sessionBus.emit(sessionId, chatEvents.thinking(sessionId, "model",
-                    System.currentTimeMillis() - startedAt, history.size(), "正在请求模型…"));
+                    System.currentTimeMillis() - startedAt, seed.recent().size(), "正在请求模型…"));
 
-            // 7) 跑起来。start() 是阻塞的，直到整轮结束（含所有工具调用）
+            // 7) 开本轮预算：工具边界会读它判断是否越线
+            toolBudgetRegistry.startBudget(sessionId);
+
+            // 8) 跑起来。start() 是阻塞的，直到整轮结束（含所有工具调用）
             assistant.chat(request.message())
                     .onPartialResponse(partial -> {
                         // 用户点了停止：不再转发增量，但模型那边没法取消，让它自己跑完
@@ -319,17 +698,7 @@ public class ChatServiceImpl implements ChatService {
                         recorder.appendAnswer(partial);
                         sessionBus.emit(sessionId, chatEvents.token(partial));
                     })
-                    .onCompleteResponse(response -> {
-                        // 模型侧结束：把用量记下来，真正的 done 在 finally 里统一发
-                        TokenUsage usage = response.tokenUsage();
-                        if (usage != null) {
-                            recorder.setUsage(Map.of(
-                                    "input_tokens", usage.inputTokenCount() == null ? 0 : usage.inputTokenCount(),
-                                    "output_tokens", usage.outputTokenCount() == null ? 0 : usage.outputTokenCount(),
-                                    "total_tokens", usage.totalTokenCount() == null ? 0 : usage.totalTokenCount(),
-                                    "cost", 0.0));
-                        }
-                    })
+                    .onCompleteResponse(response -> recordUsage(sessionId, recorder, response))
                     .onError(error -> sessionBus.emit(sessionId,
                             chatEvents.error("模型调用失败：" + error.getMessage(),
                                     request.debug() ? stackOf(error) : null)))
@@ -340,14 +709,14 @@ public class ChatServiceImpl implements ChatService {
             sessionBus.emit(sessionId, chatEvents.error(
                     "本轮对话失败：" + ex.getMessage(), request.debug() ? stackOf(ex) : null));
         } finally {
-            // 8) 落助手消息 + 发 done + 关流。无论成功失败都要走到这里
+            // 9) 落助手消息 + 发 done + 关流。无论成功失败都要走到这里
             finishTurn(sessionId, request, recorder, turnId);
         }
     }
 
 
     /**
-     * 收尾：落库、发 done（或 stopped）、关流、清理总线状态。
+     * 收尾：落库（含用量与工具轨迹）、发 done（或 stopped）、关流、清理运行时状态、异步抽取记忆。
      *
      * @param sessionId 会话 id
      * @param request   请求
@@ -357,15 +726,26 @@ public class ChatServiceImpl implements ChatService {
     private void finishTurn(String sessionId, ChatDtos.ChatRequest request, TurnRecorder recorder, String turnId) {
         String answer = recorder.answer();
         try {
-            // 1) 助手消息落库（工具轨迹也一起存，历史回放要用）
+            // 1) 助手消息落库：正文 + 模式 + 工具轨迹 + 用量 + 模型名，历史回放与用量面板都靠它
             if (!answer.isBlank()) {
-                persistMessage(sessionId, "assistant", answer, turnId);
+                Map<String, Object> usage = recorder.usage();
+                chatPersistence.saveAssistantMessage(
+                        sessionId,
+                        answer,
+                        request.mode(),
+                        toolCallsJson(recorder.toolCalls()),
+                        recorder.isStopped() ? "stopped" : "done",
+                        recorder.elapsedMs() / 1000.0,
+                        recorder.model(),
+                        longOf(usage, "input_tokens"),
+                        longOf(usage, "output_tokens"),
+                        doubleOf(usage, "cost"));
             }
             // 2) 更新会话的 updated_at 与标题（首轮用第一句话当标题）
             touchSession(sessionId, request.message());
         } catch (RuntimeException ex) {
             // 落库失败不影响用户看到答案：只记日志
-            log.warn("会话落库失败 sessionId={}", sessionId, ex);
+            log.warn("会话落库失败 sessionId={} turnId={}", sessionId, turnId, ex);
         }
 
         // 3) 用户点了停止 → 发 stopped；否则发 done
@@ -385,8 +765,12 @@ public class ChatServiceImpl implements ChatService {
         }
         // 4) 关流并清理：前端收到 done 后会把 loading 关掉
         sessionBus.finish(sessionId);
-        // 5) 清掉本线程的轮次 id：线程池复用线程，不清会把下一轮的轨迹记到本轮名下
+        // 5) 清掉本轮预算：下一轮会重新 startBudget，留着旧数据只会误判
+        toolBudgetRegistry.clearBudget(sessionId);
+        // 6) 清掉本线程的轮次 id：线程池复用线程，不清会把下一轮的轨迹记到本轮名下
         traceEventSink.clearTurnId();
+        // 7) 异步抽取记忆：失败只记日志，绝不影响本轮对话
+        scheduleMemoryExtraction(sessionId);
     }
 
 
@@ -549,9 +933,16 @@ public class ChatServiceImpl implements ChatService {
     }
 
 
-    // 落用户消息
-    private void persistMessage(String sessionId, String role, String content, String turnId) {
-        chatPersistence.saveMessage(sessionId, role, content, "agent", null, null, null);
+    /**
+     * 落一条对话消息（只有用户消息走这里；助手消息带用量，走 saveAssistantMessage）。
+     *
+     * @param sessionId 会话 id
+     * @param role      角色：user
+     * @param content   正文
+     * @param mode      对话模式：agent / doc
+     */
+    private void persistMessage(String sessionId, String role, String content, String mode) {
+        chatPersistence.saveMessage(sessionId, role, content, mode, null, null, null);
     }
     private void touchSession(String sessionId, String firstMessage) {
         chatPersistence.touchSession(sessionId, firstMessage);
@@ -877,8 +1268,14 @@ public class ChatServiceImpl implements ChatService {
         if (existed) {
             chatSessionRepository.deleteById(sessionId);
         }
+        // 清掉摘要缓存与预算：否则清空上下文后，下一轮还会被塞进上一段摘要
+        summaryCache.remove(sessionId);
+        toolBudgetRegistry.clearBudget(sessionId);
         // 清运行时状态（总线里的 Turn），让「已删会话」不再出现在运行态里
         sessionBus.finish(sessionId);
+        // 清掉摘要缓存与预算：否则清空上下文后，下一轮还会被塞进上一段摘要
+        summaryCache.remove(sessionId);
+        toolBudgetRegistry.clearBudget(sessionId);
         return new ChatDtos.DeleteSessionResult(existed, sessionId);
     }
 
@@ -917,8 +1314,16 @@ public class ChatServiceImpl implements ChatService {
         if (!rows.isEmpty()) {
             chatMessageRepository.deleteAll(rows);
         }
+        // 清掉摘要缓存与预算：否则清空上下文后，下一轮还会被塞进上一段摘要
+        summaryCache.remove(sessionId);
+        toolBudgetRegistry.clearBudget(sessionId);
         // 清掉运行时状态与检查点，让下一轮从干净状态开始
         sessionBus.finish(sessionId);
+        // 清掉摘要缓存与预算：否则清空上下文后，下一轮还会被塞进上一段摘要
+        summaryCache.remove(sessionId);
+        toolBudgetRegistry.clearBudget(sessionId);
+
+
         return new ChatDtos.ClearSessionResult(existed, sessionId);
     }
 
@@ -1060,5 +1465,606 @@ public class ChatServiceImpl implements ChatService {
      */
     private static double round4(double value) {
         return Math.round(value * 10_000.0) / 10_000.0;
+    }
+
+    // ------------------------------------------------------------------ //
+    // 上下文补种与压缩（2.1 / 2.4）
+    // ------------------------------------------------------------------ //
+
+    /**
+     * 读取本会话历史并准备成「可以直接喂给模型」的形态：最近 N 条原文 + 更早内容的摘要。
+     *
+     * <p>压缩触发条件（三条同时满足）：{@code context.auto_compress=true}、
+     * 估算 token 超过 {@code maxMessages × compress_threshold}、历史条数大于 {@code keep_recent_n}。</p>
+     *
+     * @param sessionId 会话 id
+     * @return 补种上下文（最近消息 + 摘要，摘要可能为空串）
+     */
+    private SeedContext buildSeedContext(String sessionId) {
+        List<ChatMessage> recent = new ArrayList<>(
+                chatPersistence.findRecentMessages(sessionId, MAX_SEED_MESSAGES));
+
+        int keepRecent = intSetting("context.keep_recent_n", 10);
+        // 历史本来就不多：原样带上，顺便把之前压过的摘要继续带着
+        if (recent.size() <= keepRecent || !boolSetting("context.auto_compress", true)) {
+            return new SeedContext(recent, cachedSummary(sessionId));
+        }
+
+        int contextWindow = resolveContextWindow();
+        double threshold = doubleSetting("context.compress_threshold", 0.7);
+        long estimated = 0L;
+        for (ChatMessage row : recent) {
+            estimated += estimateTokens(row.getContent());
+        }
+        // 没到阈值：全部原样带上（此时仍在窗口内，压缩反而损失信息）
+        if (estimated <= (long) (contextWindow * threshold)) {
+            return new SeedContext(recent, cachedSummary(sessionId));
+        }
+
+        // 触发了：最近 keepRecent 条原样保留，更早的压成一段摘要
+        int splitAt = recent.size() - keepRecent;
+        List<ChatMessage> older = new ArrayList<>(recent.subList(0, splitAt));
+        List<ChatMessage> tail = new ArrayList<>(recent.subList(splitAt, recent.size()));
+        String summary = summarize(sessionId, older);
+
+        log.info("上下文压缩：session={} 估算 {} token > 窗口 {} 的 {}%，保留最近 {} 条，摘要 {} 字",
+                sessionId, estimated, contextWindow, threshold, tail.size(), summary.length());
+        return new SeedContext(tail, summary);
+    }
+
+    /**
+     * 把一段较早的历史压成摘要；同一批消息只摘要一次。
+     *
+     * @param sessionId 会话 id（摘要缓存按它分组）
+     * @param older     需要压缩的较早消息（时间正序）
+     * @return 摘要文本；失败时返回上一次的摘要（可能为空串）
+     */
+    private String summarize(String sessionId, List<ChatMessage> older) {
+        if (older.isEmpty()) {
+            return cachedSummary(sessionId);
+        }
+        long lastMessageId = idOf(older.get(older.size() - 1));
+        SummaryCache cached = summaryCache.get(sessionId);
+        // 同一批消息已经摘要过：直接复用，省一次模型调用
+        if (cached != null && cached.lastMessageId() == lastMessageId) {
+            return cached.summary();
+        }
+        String previous = cached == null ? "" : cached.summary();
+
+        String summary;
+        try {
+            ChatModel chatModel = llmModelFactoryRouter.createChatModel(buildModelSpec());
+            summary = chatModel.chat(buildSummaryPrompt(previous, older));
+        } catch (RuntimeException e) {
+            // 摘要失败不能打断对话：退回「只保留最近 N 条」，模型至少还能看到最近的上下文
+            log.warn("上下文摘要失败，本轮退回「只保留最近 N 条」 session={}：{}", sessionId, e.getMessage());
+            return previous;
+        }
+        if (summary == null || summary.isBlank()) {
+            return previous;
+        }
+        String trimmed = summary.strip();
+        if (trimmed.length() > MAX_SUMMARY_CHARS) {
+            trimmed = trimmed.substring(0, MAX_SUMMARY_CHARS);
+        }
+        summaryCache.put(sessionId, new SummaryCache(lastMessageId, trimmed));
+        return trimmed;
+    }
+
+    /**
+     * 拼摘要提示词。
+     *
+     * @param previous 上一次的摘要（可能为空串）；要求模型合并进来，避免「压一次丢一段」
+     * @param older    需要压缩的消息（时间正序）
+     * @return 提示词
+     */
+    private String buildSummaryPrompt(String previous, List<ChatMessage> older) {
+        StringBuilder prompt = new StringBuilder();
+        prompt.append("你在帮一个对话系统压缩上下文。请把下面的历史对话压成一段摘要，")
+                .append("保留：用户的目标与偏好、已经确认的结论、未完成的事项、关键文件路径与命令。")
+                .append("不要编造，不要输出客套话，直接给摘要正文，控制在 ")
+                .append(MAX_SUMMARY_CHARS).append(" 字以内。\n\n");
+        if (previous != null && !previous.isBlank()) {
+            prompt.append("已有的更早摘要（请合并进来，不要丢掉里面的事实）：\n")
+                    .append(previous).append("\n\n");
+        }
+        prompt.append("需要压缩的对话片段：\n");
+        int used = 0;
+        for (ChatMessage row : older) {
+            if (used >= MAX_SUMMARY_INPUT_CHARS) {
+                prompt.append("…（更早的内容已省略）\n");
+                break;
+            }
+            String text = nvl(row.getContent());
+            int budget = MAX_SUMMARY_INPUT_CHARS - used;
+            if (text.length() > budget) {
+                text = text.substring(0, budget);
+            }
+            prompt.append("user".equals(row.getRole()) ? "用户：" : "助手：")
+                    .append(text).append('\n');
+            used += text.length();
+        }
+        return prompt.toString();
+    }
+
+    /**
+     * 把最近的消息还原成 LangChain4j 的记忆。
+     *
+     * <p><b>为什么每轮新建：</b>记忆只服务于「这一次请求」。新建一个窗口记忆、把历史灌进去，
+     * 请求结束即丢弃，既不会跨会话串味，也不用处理「多线程同时改同一个 memory」的问题。</p>
+     *
+     * @param recent 最近的消息（时间正序，不含本轮用户消息）
+     * @return 已灌好历史的窗口记忆
+     */
+    private ChatMemory buildChatMemory(List<ChatMessage> recent) {
+        ChatMemory memory = MessageWindowChatMemory.builder()
+                .maxMessages(MAX_SEED_MESSAGES)
+                .build();
+        for (ChatMessage row : recent) {
+            String text = nvl(row.getContent());
+            if (text.isBlank()) {
+                continue;
+            }
+            if ("user".equals(row.getRole())) {
+                memory.add(UserMessage.from(text));
+            } else if ("assistant".equals(row.getRole())) {
+                memory.add(AiMessage.from(text));
+            }
+            // system / tool 行不补：它们不是对话轮次，塞进窗口只会挤掉真正的上下文
+        }
+        return memory;
+    }
+
+    /**
+     * 读会话级摘要缓存。
+     *
+     * @param sessionId 会话 id
+     * @return 摘要；没有压缩过时为空的字符串（调用方不需要判空）
+     */
+    private String cachedSummary(String sessionId) {
+        SummaryCache cached = summaryCache.get(sessionId);
+        return cached == null ? "" : cached.summary();
+    }
+
+    // ------------------------------------------------------------------ //
+    // 系统提示词动态拼装（2.6）
+    // ------------------------------------------------------------------ //
+
+    /**
+     * 拼本轮的完整系统提示词：基础模板 + 工作区记忆（仅首轮）+ 可用技能 + 更早内容的摘要。
+     *
+     * <p>这些内容都放在 systemMessage 而不是 chatMemory 里：systemMessage 每轮现拼、不占历史窗口，
+     * 也不会因为窗口滑动被挤掉。</p>
+     *
+     * @param seed        补种上下文
+     * @param userMessage 本轮用户输入（用来检索相关记忆）
+     * @return 完整的系统提示词
+     */
+    private String buildSystemMessage(SeedContext seed, String userMessage) {
+        StringBuilder system = new StringBuilder(systemPrompt);
+        // 记忆只在新对话的第一条消息注入：这是设置项 memory.inject_enabled 声明的语义
+        appendMemoryBlock(system, userMessage, seed.recent().isEmpty());
+        appendSkillBlock(system);
+        if (!seed.summary().isBlank()) {
+            system.append("\n\n## 本会话更早内容的摘要（系统自动压缩，供你回忆）\n\n")
+                    .append(seed.summary());
+        }
+        return system.toString();
+    }
+
+    /**
+     * 追加「工作区记忆」段落（受 memory.enabled / memory.inject_enabled 控制）。
+     *
+     * @param system    正在拼装的系统提示词
+     * @param query     检索关键词（本轮用户输入）
+     * @param firstTurn 是否为新对话的第一条消息
+     */
+    private void appendMemoryBlock(StringBuilder system, String query, boolean firstTurn) {
+        // 只有首轮注入；后续轮次模型已经能从历史里看到这些记忆
+        if (!firstTurn || query == null || query.isBlank()) {
+            return;
+        }
+        if (!boolSetting("memory.enabled", true) || !boolSetting("memory.inject_enabled", true)) {
+            return;
+        }
+        int topK = intSetting("memory.top_k", 5);
+        int minImportance = intSetting("memory.min_importance", 1);
+
+        List<String> lines = new ArrayList<>();
+        try {
+            Map<String, Object> result = memoryService.search(
+                    new MemoryDtos.MemorySearchRequest(null, query, topK));
+            Object rawHits = result.get("hits");
+            if (!(rawHits instanceof List<?> hits)) {
+                return;
+            }
+            for (Object element : hits) {
+                if (!(element instanceof Map<?, ?> hit)) {
+                    continue;
+                }
+                // 重要度不达标的记忆不注入：低价值记忆只会干扰模型
+                // hit 是 Map<?, ?>，不能直接传 longOf(Map<String,Object>)，这里就地取值
+                long importance = hit.get("importance") instanceof Number number
+                        ? number.longValue()
+                        : 0L;
+                if (importance < minImportance) {
+                    continue;
+                }
+                String content = stringOf(hit, "content");
+                if (content.isBlank()) {
+                    continue;
+                }
+                String category = stringOf(hit, "category");
+                lines.add("- [" + (category.isBlank() ? "fact" : category) + "] " + content);
+            }
+        } catch (RuntimeException e) {
+            // 记忆检索失败按「没有记忆」处理：这是增强能力，不能拖垮主流程
+            log.warn("记忆注入失败，本轮按无记忆处理：{}", e.getMessage());
+            return;
+        }
+        if (lines.isEmpty()) {
+            return;
+        }
+        system.append("\n\n## 工作区记忆（用户此前确认过的偏好与事实，可直接引用）\n\n")
+                .append(String.join("\n", lines));
+    }
+
+    /**
+     * 追加「可用技能」段落（受 skill.enabled / skill.auto_inject 控制）。
+     *
+     * <p>只放「技能名 + 一行描述」，完整正文仍由模型用 {@code read_skill} 按需读取：
+     * 几十个技能全文塞进来，提示词会直接爆掉。</p>
+     *
+     * @param system 正在拼装的系统提示词
+     */
+    private void appendSkillBlock(StringBuilder system) {
+        if (!boolSetting("skill.enabled", true) || !boolSetting("skill.auto_inject", true)) {
+            return;
+        }
+        List<String> lines = new ArrayList<>();
+        try {
+            Map<String, Object> snapshot = skillService.snapshot();
+            Object rawSkills = snapshot.get("skills");
+            if (!(rawSkills instanceof List<?> skills)) {
+                return;
+            }
+            for (Object element : skills) {
+                if (lines.size() >= MAX_INJECTED_SKILLS) {
+                    break;
+                }
+                if (!(element instanceof Map<?, ?> skill)) {
+                    continue;
+                }
+                // 被用户在设置里禁用的技能不提示：避免模型读到却调不动
+                if (Boolean.FALSE.equals(skill.get("enabled"))) {
+                    continue;
+                }
+                String name = stringOf(skill, "name");
+                String description = stringOf(skill, "description");
+                if (name.isBlank() || description.isBlank()) {
+                    continue;
+                }
+                lines.add("- " + name + "：" + oneLine(description, MAX_SKILL_DESCRIPTION_CHARS));
+            }
+        } catch (RuntimeException e) {
+            // 技能扫描失败按「没有技能」处理
+            log.warn("技能注入失败，本轮按无技能处理：{}", e.getMessage());
+            return;
+        }
+        if (lines.isEmpty()) {
+            return;
+        }
+        system.append("\n\n## 可用技能（需要时先调用 read_skill 读取完整说明）\n\n")
+                .append(String.join("\n", lines));
+    }
+
+    // ------------------------------------------------------------------ //
+    // 用量记录与预算
+    // ------------------------------------------------------------------ //
+
+    /**
+     * 记录一次模型调用的用量：写进本轮记录器（随 done 事件下发），并累加到预算熔断。
+     *
+     * @param sessionId 会话 id
+     * @param recorder  本轮记录器
+     * @param response  模型返回的完整响应（含 tokenUsage，可能为 null）
+     */
+    private void recordUsage(String sessionId, TurnRecorder recorder, ChatResponse response) {
+        TokenUsage usage = response == null ? null : response.tokenUsage();
+        long input = (usage == null || usage.inputTokenCount() == null) ? 0L : usage.inputTokenCount();
+        long output = (usage == null || usage.outputTokenCount() == null) ? 0L : usage.outputTokenCount();
+
+        // 单价来自模型清单；手写的新模型名查不到时按 0 计，费用显示 0 而不是报错
+        LlmDtos.ModelInfo info = resolveModelInfo(recorder.model());
+        double cost = (input * info.priceIn() + output * info.priceOut()) / 1_000_000.0;
+
+        recorder.setUsage(Map.of(
+                "input_tokens", input,
+                "output_tokens", output,
+                "total_tokens", input + output,
+                "cost", round4(cost)));
+
+        // 喂给预算熔断：下一次工具调用前它会据此判断是否越线
+        toolBudgetRegistry.addUsage(sessionId, input, output, info.priceIn(), info.priceOut());
+    }
+
+    /**
+     * 异步抽取本轮记忆（受 memory.enabled / memory.extract_enabled 控制）。
+     *
+     * @param sessionId 会话 id
+     */
+    private void scheduleMemoryExtraction(String sessionId) {
+        if (sessionId == null || sessionId.isBlank()) {
+            return;
+        }
+        if (!boolSetting("memory.enabled", true) || !boolSetting("memory.extract_enabled", true)) {
+            return;
+        }
+        memoryExtractExecutor.submit(() -> {
+            try {
+                memoryService.extract(new MemoryDtos.MemoryExtractRequest(sessionId, null));
+            } catch (RuntimeException e) {
+                // 抽取失败只记日志：它是一次「顺手」的额外调用，不能影响用户已经看到的回答
+                log.warn("记忆抽取失败 sessionId={}：{}", sessionId, e.getMessage());
+            }
+        });
+    }
+
+    // ------------------------------------------------------------------ //
+    // 小工具
+    // ------------------------------------------------------------------ //
+
+    /**
+     * 取当前供应商 id。
+     *
+     * @return 供应商 id；设置为空时按 deepseek 兜底
+     */
+    private String providerId() {
+        Object value = settingsRegistry.getSetting("llm.provider");
+        return (value == null || String.valueOf(value).isBlank()) ? "deepseek" : String.valueOf(value);
+    }
+
+    /**
+     * 取当前设置的模型名。
+     *
+     * @return 模型名；设置为空时为空串（调用方再用供应商默认模型兜底）
+     */
+    private String currentModelName() {
+        Object value = settingsRegistry.getSetting("llm.model");
+        return value == null ? "" : String.valueOf(value).trim();
+    }
+
+    /**
+     * 解析模型描述（窗口、单价）。查不到时返回一个「单价 0、窗口兜底」的描述。
+     *
+     * @param modelName 模型名；可为空
+     * @return 模型描述；永不为 null
+     */
+    private LlmDtos.ModelInfo resolveModelInfo(String modelName) {
+        String name = modelName == null ? "" : modelName;
+        try {
+            return llmProviderRegistry.resolveModel(providerId(), name);
+        } catch (RuntimeException e) {
+            // 手写的新模型名可能不在清单里：用量统计不该因此中断
+            return new LlmDtos.ModelInfo(
+                    name, name, DEFAULT_CONTEXT_WINDOW, true, false, 0.0, 0.0);
+        }
+    }
+
+    /**
+     * 取当前模型的上下文窗口。
+     *
+     * @return 窗口大小（token）；未知时返回兜底值
+     */
+    private int resolveContextWindow() {
+        int window = resolveModelInfo(currentModelName()).contextWindow();
+        return window > 0 ? window : DEFAULT_CONTEXT_WINDOW;
+    }
+
+    /**
+     * 粗估一段文本占多少 token。
+     *
+     * @param text 文本
+     * @return 估算 token 数（按 1 字符 ≈ 1 token）
+     */
+    private static int estimateTokens(String text) {
+        if (text == null || text.isEmpty()) {
+            return 0;
+        }
+        // 按「1 字符 ≈ 1 token」粗估：中文接近真实值，英文偏高。
+        // 宁可早一点触发压缩，也不要等供应商报 context length 错误。
+        return text.length();
+    }
+
+    /**
+     * 取消息主键（null 视为 0）。
+     *
+     * @param row 消息实体
+     * @return 主键
+     */
+    private static long idOf(ChatMessage row) {
+        return row.getId() == null ? 0L : row.getId();
+    }
+
+    /**
+     * 把文本压成一行并截断。
+     *
+     * @param text     原始文本
+     * @param maxChars 最大字符数
+     * @return 单行文本
+     */
+    private static String oneLine(String text, int maxChars) {
+        String oneLine = nvl(text).replaceAll("\\s+", " ").strip();
+        return oneLine.length() <= maxChars ? oneLine : oneLine.substring(0, maxChars) + "…";
+    }
+
+    /**
+     * 空字符串安全访问：null 转成空串。
+     *
+     * @param text 文本
+     * @return 非 null 的文本
+     */
+    private static String nvl(String text) {
+        return text == null ? "" : text;
+    }
+
+    /**
+     * 把工具轨迹序列化成 JSON；空轨迹返回 null（数据库里就不存 "[]"）。
+     *
+     * @param traces 工具轨迹
+     * @return JSON 字符串或 null
+     */
+    private String toolCallsJson(List<ChatDtos.ToolCallTrace> traces) {
+        if (traces == null || traces.isEmpty()) {
+            return null;
+        }
+        try {
+            return objectMapper.writeValueAsString(traces);
+        } catch (Exception e) {
+            // 序列化失败只丢轨迹，不能影响正文落库
+            log.warn("工具轨迹序列化失败，本条消息不存轨迹：{}", e.getMessage());
+            return null;
+        }
+    }
+
+    /**
+     * 读布尔设置。
+     *
+     * @param key      设置键
+     * @param fallback 读取失败时的兜底值
+     * @return 布尔值
+     */
+    private boolean boolSetting(String key, boolean fallback) {
+        try {
+            return Boolean.TRUE.equals(settingsRegistry.getSetting(key));
+        } catch (RuntimeException e) {
+            return fallback;
+        }
+    }
+
+    /**
+     * 读整数设置。
+     *
+     * @param key      设置键
+     * @param fallback 读取失败时的兜底值
+     * @return 整数值
+     */
+    private int intSetting(String key, int fallback) {
+        try {
+            Object value = settingsRegistry.getSetting(key);
+            return value instanceof Number number ? number.intValue() : fallback;
+        } catch (RuntimeException e) {
+            return fallback;
+        }
+    }
+
+    /**
+     * 读浮点设置。
+     *
+     * @param key      设置键
+     * @param fallback 读取失败时的兜底值
+     * @return 浮点值
+     */
+    private double doubleSetting(String key, double fallback) {
+        try {
+            Object value = settingsRegistry.getSetting(key);
+            return value instanceof Number number ? number.doubleValue() : fallback;
+        } catch (RuntimeException e) {
+            return fallback;
+        }
+    }
+
+    /**
+     * 从 Map 里读 long（不存在或类型不对时返回 0）。
+     *
+     * @param map 数据来源
+     * @param key 字段名
+     * @return long 值
+     */
+    private static long longOf(Map<String, Object> map, String key) {
+        if (map == null) {
+            return 0L;
+        }
+        Object value = map.get(key);
+        return value instanceof Number number ? number.longValue() : 0L;
+    }
+
+    /**
+     * 从 Map 里读 double（不存在或类型不对时返回 0）。
+     *
+     * @param map 数据来源
+     * @param key 字段名
+     * @return double 值
+     */
+    private static double doubleOf(Map<String, Object> map, String key) {
+        if (map == null) {
+            return 0.0;
+        }
+        Object value = map.get(key);
+        return value instanceof Number number ? number.doubleValue() : 0.0;
+    }
+
+    /**
+     * 从 Map 里读字符串（不存在时返回空串）。
+     *
+     * @param map 数据来源
+     * @param key 字段名
+     * @return 去首尾空白后的字符串
+     */
+    private static String stringOf(Map<?, ?> map, String key) {
+        if (map == null) {
+            return "";
+        }
+        Object value = map.get(key);
+        return value == null ? "" : String.valueOf(value).strip();
+    }
+
+    // ------------------------------------------------------------------ //
+    // 内部数据载体
+    // ------------------------------------------------------------------ //
+
+    /**
+     * 一轮补种上下文：最近消息 + 更早内容的摘要。
+     *
+     * @param recent  最近的消息（时间正序，不含本轮用户消息）
+     * @param summary 更早内容的摘要；从未压缩过时为空串
+     */
+    private record SeedContext(
+            // 最近的消息，按「最早 → 最新」排列
+            List<ChatMessage> recent,
+            // 更早内容的摘要；空串表示没有压缩过
+            String summary
+    ) {
+    }
+
+    /**
+     * 会话摘要缓存项。
+     *
+     * @param lastMessageId 这段摘要覆盖到的最后一条消息 id
+     * @param summary       摘要正文
+     */
+    private record SummaryCache(
+            // 覆盖到的最后一条消息 id：id 相同说明没有新消息，可以复用摘要
+            long lastMessageId,
+            // 摘要正文
+            String summary
+    ) {
+    }
+
+    /**
+     * 一条解析后的 `\doc` 指令。
+     *
+     * @param action help / list / delete / import / search / unknown
+     * @param target 删除或导入的目标（文档名或文件路径）；其它动作为空串
+     * @param query  检索问题；只在 action=search 时有值
+     */
+    private record DocCommand(
+            // 动作：help / list / delete / import / search / unknown
+            String action,
+            // 删除或导入的目标
+            String target,
+            // 检索问题
+            String query
+    ) {
     }
 }
