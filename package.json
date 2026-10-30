@@ -11,6 +11,7 @@
   "scripts": {
     "setup": "uv sync --directory backend && pnpm install && node scripts/install-hooks.mjs",
     "setup:hooks": "node scripts/install-hooks.mjs",
+    "setup:gh-ssh": "node scripts/setup-github-ssh.mjs",
     "dev": "node scripts/dev.mjs",
     "dev:web": "pnpm --filter app-frontend run dev",
     "dev:desktop": "pnpm --filter app-electron run dev",
