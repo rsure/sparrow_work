@@ -109,6 +109,10 @@ node scripts/setup-github-ssh.mjs --fallback-https
 
 也可以用 pnpm 快捷键：`pnpm run setup:gh-ssh -- --switch-remote`。
 
+> **小提示**：`pnpm run` 在依赖没装齐时会先自动跑一次 `pnpm install`，中途可能因为
+> `electron` 二进制下载失败（`ECONNRESET`）而中断。**这台机器只是想修 git 的话，
+> 直接用上面的 `node scripts/setup-github-ssh.mjs` 即可**，它只依赖 Node 标准库，不需要安装依赖。
+
 ### 3.3 脚本做什么、不做什么
 
 做（全部幂等，重复跑不会重复写配置、不会覆盖已有私钥）：
